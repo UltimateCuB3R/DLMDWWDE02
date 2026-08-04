@@ -5,6 +5,7 @@ from calculation import calc
 import pandas as pd
 
 LOAD_CSV = False
+SQL_TYPE = 'PGSQL'  # SQLITE
 WRITE_SQL = False
 REPLAY = True
 
@@ -32,9 +33,25 @@ if __name__ == '__main__':
         print("Data Types (games):")
         print(data_types)"""
 
-        sql_in = database.create_connection('data/ingest.db')
+        if SQL_TYPE == 'PGSQL':
+            # sql_in = database.create_postgres_connection(dbname="postgres", user="postgres", password="mysecretpassword")
+            sql_in = database.create_engine("postgresql+psycopg://postgres:mysecretpassword@localhost:5432/postgres")
+            sql_pg = database.create_postgres_connection(dbname="postgres", user="postgres",
+                                                         password="mysecretpassword")
+        else:
+            sql_in = database.create_connection('data/ingest.db')
+            sql_pg = None
         print('SqlIn')
         if WRITE_SQL:
+            """if SQL_TYPE == 'PGSQL' and sql_pg:
+                pass
+                sql_pg.autocommit = True
+                cursor = sql_pg.cursor()
+                cursor.execute('drop table if exists "public"."games"')
+                cursor.execute('drop table if exists "public"."events"')
+                cursor.execute('drop table if exists "public"."pitches"')
+                print('SqlIn - all tables dropped')"""
+
             games_table.df.to_sql('games', sql_in, if_exists='replace', index=False)
             print('SqlIn - Games written to SQL')
             events_table.df.to_sql('events', sql_in, if_exists='replace', index=False)
@@ -42,14 +59,18 @@ if __name__ == '__main__':
             pitches_table.df.to_sql('pitches', sql_in, if_exists='replace', index=False)
             print('SqlIn - Pitches written to SQL')
     else:
-        sql_in = database.create_connection('data/ingest.db')
+        if SQL_TYPE == 'PGSQL':
+            sql_in = database.create_engine("postgresql+psycopg://postgres:mysecretpassword@localhost:5432/postgres")
+        else:
+            sql_in = database.create_connection('data/ingest.db')
         print('SqlIn - Connection to db')
-        games_df = pd.read_sql_query('SELECT * FROM games LIMIT 1', sql_in)
+        games_df = pd.read_sql_query('SELECT * FROM public.games LIMIT 5', sql_in)
         # read the events that fit the game ids
-        #events_df = pd.read_sql_query('SELECT * FROM events WHERE Game = 360403123', sql_in)
         game_ids = games_df["Game"].tolist()
-        events_df = pd.read_sql_query(f'SELECT * FROM events WHERE Game IN ({",".join(map(str, game_ids))})', sql_in)
-        pitches_df = pd.read_sql_query(f'SELECT * FROM pitches WHERE Game IN ({",".join(map(str, game_ids))})', sql_in)
+        events_df = pd.read_sql_query(f'SELECT * FROM public.events WHERE "Game" IN ({",".join(map(str, game_ids))})',
+                                      sql_in)
+        pitches_df = pd.read_sql_query(
+            f'SELECT * FROM public.pitches WHERE "Game" IN ({",".join(map(str, game_ids))})', sql_in)
         print('SqlIn - All Tables loaded from db')
 
         games_table = ingest.PdTable(table_name='games', df=games_df)
@@ -63,4 +84,3 @@ if __name__ == '__main__':
             game_calc.receive_event(event)
     else:
         print('No Replay started.')
-

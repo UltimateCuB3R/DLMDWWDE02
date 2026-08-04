@@ -19,7 +19,7 @@ def load_csv_into_table(file_path: str, table_name: str) -> PdTable:
     return PdTable(table_name=table_name, df=df_cleaned)
 
 
-def _load_csv_into_pandas(file_path: Path, table_name: str, encoding: str = "utf-8") -> pd.DataFrame:
+def _load_csv_into_pandas(file_path: Path, table_name: str, encoding: str = "utf-8"):
     """
     Test helper to load a CSV file into a pandas DataFrame.
     """

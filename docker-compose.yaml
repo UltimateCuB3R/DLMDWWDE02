@@ -10,6 +10,7 @@ services:
     container_name: mlb-flink
     ports:
       - "8081:8081"
+
   kafka:
     image: apache/kafka:latest
     container_name: mlb-kafka
@@ -26,14 +27,25 @@ services:
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
       KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
 
-  postgres:
-    image: postgres:latest
+  postgres-raw:
+    image: postgres:17
     container_name: mlb-postgres-raw
     environment:
-      POSTGRES_DB: raw
-      POSTGRES_USER: ingestion
-      POSTGRES_PASSWORD: ingest123
+      POSTGRES_PASSWORD: mysecretpassword
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+
+  postgres-analytics:
+    image: postgres:17
+    container_name: mlb-postgres-analytics
+    environment:
+      POSTGRES_PASSWORD: mysecretpassword
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+    postgres_data:

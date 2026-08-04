@@ -1,4 +1,9 @@
 import sqlite3
+import psycopg
+import sqlalchemy
+
+def create_engine(connection_string):
+    return sqlalchemy.create_engine(connection_string)
 
 
 def create_connection(db_file):
@@ -11,6 +16,30 @@ def create_connection(db_file):
         conn = sqlite3.connect(db_file)
         return conn
     except sqlite3.Error as e:
+        print(e)
+    return conn
+
+
+def create_postgres_connection(dbname, user, password, host="localhost", port=5432):
+    """ create a database connection to a PostgreSQL database
+    :param dbname: database name
+    :param user: database user
+    :param password: database password
+    :param host: database host (default: localhost)
+    :param port: database port (default: 5432)
+    :return: Connection object or None
+    """
+    conn = None
+    try:
+        conn = psycopg.connect(
+            dbname=dbname,
+            user=user,
+            password=password,
+            host=host,
+            port=port
+        )
+        return conn
+    except psycopg.Error as e:
         print(e)
     return conn
 
@@ -43,6 +72,11 @@ def insert_data(conn, table, data):
     except sqlite3.Error as e:
         print(e)
 
+
 if __name__ == "__main__":
-    sql_in = create_connection('ingest.db')
-    sql_out = create_connection('output.db')
+    # sql_in = create_connection('ingest.db')
+    # sql_out = create_connection('output.db')
+
+    sql_pq = create_postgres_connection(dbname="postgres", user="postgres", password="mysecretpassword")
+    print(f'Connected to {sql_pq}')
+    create_table(sql_pq, create_table_sql='CREATE TABLE IF NOT EXISTS test_games (Game INTEGER PRIMARY KEY, Date TEXT, HomeTeam TEXT, AwayTeam TEXT, HomeScore INTEGER, AwayScore INTEGER, Venue TEXT, Attendance INTEGER, Duration TEXT, Notes TEXT)')
