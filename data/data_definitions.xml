@@ -1,0 +1,105 @@
+<?xml version="1.0"?>
+<DATABASES>
+    <DATABASE db="ingest.db">
+        <TABLE name="games">
+            <column name="Game" dtype="int64"/>
+            <column name="away" dtype="str"/>
+            <column name="away-record" dtype="str"/>
+            <column name="awayaway-record" dtype="str"/>
+            <column name="home" dtype="str"/>
+            <column name="home-record" dtype="str"/>
+            <column name="homehome-record" dtype="str"/>
+            <column name="away-score" dtype="float64"/>
+            <column name="home-score" dtype="float64"/>
+            <column name="postseason info" dtype="str"/>
+            <column name="Walks Issued - Away" dtype="float64"/>
+            <column name="Walks Issued - Home" dtype="float64"/>
+            <column name="Stolen Bases - Away" dtype="float64"/>
+            <column name="Stolen Bases - Home" dtype="float64"/>
+            <column name="Strikeouts Thrown - Away" dtype="float64"/>
+            <column name="Strikeouts Thrown - Home" dtype="float64"/>
+            <column name="Total Bases - Away" dtype="float64"/>
+            <column name="Total Bases - Home" dtype="float64"/>
+            <column name="Stadium" dtype="str"/>
+            <column name="Date" dtype="str"/>
+            <column name="Location" dtype="str"/>
+            <column name="Odds" dtype="str"/>
+            <column name="O/U" dtype="str"/>
+            <column name="Attendance" dtype="str"/>
+            <column name="Capacity" dtype="str"/>
+            <column name="Duration" dtype="str"/>
+            <column name="Umpires" dtype="str"/>
+            <column name="WIN - Pitcher - Stats" dtype="str"/>
+            <column name="WIN - Pitcher - Id" dtype="float64"/>
+            <column name="WIN - Pitcher - Name" dtype="str"/>
+            <column name="WIN - Pitcher - AbbrName" dtype="str"/>
+            <column name="WIN - Pitcher - Record" dtype="str"/>
+            <column name="LOSS - Pitcher - Stats" dtype="str"/>
+            <column name="LOSS - Pitcher - Id" dtype="float64"/>
+            <column name="LOSS - Pitcher - Name" dtype="str"/>
+            <column name="LOSS - Pitcher - AbbrName" dtype="str"/>
+            <column name="LOSS - Pitcher - Record" dtype="str"/>
+            <column name="SAVE - Pitcher - Stats" dtype="str"/>
+            <column name="SAVE - Pitcher - Id" dtype="float64"/>
+            <column name="SAVE - Pitcher - Name" dtype="str"/>
+            <column name="SAVE - Pitcher - AbbrName" dtype="str"/>
+            <column name="SAVE - Pitcher - Record" dtype="str"/>
+            <column name="Extra Innings" dtype="object"/>
+        </TABLE>
+        <TABLE name="events">
+            <column name="Game" dtype="int64"/>
+            <column name="Pitching Team" dtype="str"/>
+            <column name="Batting Team" dtype="str"/>
+            <column name="Inning" dtype="str"/>
+            <column name="Event Id" dtype="int64"/>
+            <column name="Events" dtype="str"/>
+            <column name="Away" dtype="str"/>
+            <column name="Home" dtype="str"/>
+        </TABLE>
+        <TABLE name="pitches">
+            <column name="Num" dtype="int64"/>
+            <column name="Pitch" dtype="str"/>
+            <column name="Type" dtype="str"/>
+            <column name="MPH" dtype="int64"/>
+            <column name="play-hitzone" dtype="str"/>
+            <column name="play-bases" dtype="float64"/>
+            <column name="play-field" dtype="str"/>
+            <column name="Pitcher" dtype="str"/>
+            <column name="Pitching Team" dtype="str"/>
+            <column name="Batting Team" dtype="str"/>
+            <column name="Inning" dtype="str"/>
+            <column name="Event Id" dtype="int64"/>
+            <column name="Game" dtype="int64"/>
+        </TABLE>
+    </DATABASE>
+    <DATABASE db="game_state.db">
+        <TABLE name="game_state">
+            <column name="game-id" dtype="int64"/>
+            <column name="away" dtype="str"/>
+            <column name="home" dtype="str"/>
+            <column name="Stadium" dtype="str"/>
+            <column name="Date" dtype="str"/>
+            <column name="Location" dtype="str"/>
+            <column name="Umpires" dtype="str"/>
+            <column name="inning" dtype="str"/>
+            <column name="out" dtype="int64"/>
+            <column name="count" dtype="str"/>
+            <column name="runner-1" dtype="str"/>
+            <column name="runner-2" dtype="str"/>
+            <column name="runner-3" dtype="str"/>
+            <column name="away-score" dtype="str"/>
+            <column name="home-score" dtype="str"/>
+            <column name="pitcher" dtype="str"/>
+            <column name="game-running" dtype="bool"/>
+        </TABLE>
+        <TABLE name="innings">
+            <column name="game-id" dtype="int64"/>
+            <column name="inning" dtype="str"/>
+            <column name="batting-team" dtype="str"/>
+            <column name="pitching-team" dtype="str"/>
+            <column name="away-score" dtype="str"/>
+            <column name="home-score" dtype="str"/>
+            <column name="inning-running" dtype="bool"/>
+        </TABLE>
+    </DATABASE>
+</DATABASES>
