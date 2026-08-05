@@ -8,50 +8,27 @@ LOAD_CSV = False
 SQL_TYPE = 'PGSQL'  # SQLITE
 WRITE_SQL = False
 REPLAY = True
+KAFKA = True
+CONSUME = True
 
 if __name__ == '__main__':
     print('Data Engineering')
 
-    # games_table = ingest.load_csv_file("data/games.csv", "games")
-    # print(games_table)
-
     if LOAD_CSV:
-        games_table = ingest.load_csv_into_table("raw_data/games.csv", "games")
+        games_table = ingest._load_csv_into_table("raw_data/games.csv", "games")
         print('Games Table loaded from csv')
-        events_table = ingest.load_csv_into_table("raw_data/events.csv", "events")
+        events_table = ingest._load_csv_into_table("raw_data/events.csv", "events")
         print('Events Table loaded from csv')
-        pitches_table = ingest.load_csv_into_table("raw_data/pitches.csv", "pitches")
+        pitches_table = ingest._load_csv_into_table("raw_data/pitches.csv", "pitches")
         print('Pitches Table loaded from csv')
-        """# Check data types of each column in the DataFrame
-        data_types = pitches_table.df.dtypes
-        print("Data Types (pitches):")
-        print(data_types)
-        data_types = events_table.df.dtypes
-        print("Data Types (events):")
-        print(data_types)
-        data_types = games_table.df.dtypes
-        print("Data Types (games):")
-        print(data_types)"""
 
         if SQL_TYPE == 'PGSQL':
             # sql_in = database.create_postgres_connection(dbname="postgres", user="postgres", password="mysecretpassword")
             sql_in = database.create_engine("postgresql+psycopg://postgres:mysecretpassword@localhost:5432/postgres")
-            sql_pg = database.create_postgres_connection(dbname="postgres", user="postgres",
-                                                         password="mysecretpassword")
         else:
             sql_in = database.create_connection('data/ingest.db')
-            sql_pg = None
         print('SqlIn')
         if WRITE_SQL:
-            """if SQL_TYPE == 'PGSQL' and sql_pg:
-                pass
-                sql_pg.autocommit = True
-                cursor = sql_pg.cursor()
-                cursor.execute('drop table if exists "public"."games"')
-                cursor.execute('drop table if exists "public"."events"')
-                cursor.execute('drop table if exists "public"."pitches"')
-                print('SqlIn - all tables dropped')"""
-
             games_table.df.to_sql('games', sql_in, if_exists='replace', index=False)
             print('SqlIn - Games written to SQL')
             events_table.df.to_sql('events', sql_in, if_exists='replace', index=False)
@@ -78,9 +55,18 @@ if __name__ == '__main__':
         pitches_table = ingest.PdTable(table_name='pitches', df=pitches_df)
 
     if REPLAY:
-        game_calc = calc.Calculation(None)
-        for event in replay.replay([games_table, events_table, pitches_table]):
-            # print(event)
-            game_calc.receive_event(event)
+        if KAFKA:
+            replay.replay_kafka(sql_in)
+            print('Replay ended.')
+        else:
+            game_calc = calc.Calculation(None)
+            for event in replay.replay([games_table, events_table, pitches_table]):
+                # print(event)
+                game_calc.receive_event(event)
     else:
         print('No Replay started.')
+
+    if CONSUME:
+        print('Consume started.')
+        calc.consume_kafka(None)
+        print('Consume ended.')
