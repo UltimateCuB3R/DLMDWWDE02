@@ -2,9 +2,23 @@ from typing import Any
 
 import pandas as pd
 from ingestion.ingest import load_dtypes_for_table
+from kafka import KafkaConsumer
 
 OUTPUT_GAMESTATE = False
 
+def set_consumer(server='localhost', port=9092, topic='game-events'):
+    return KafkaConsumer(topic,
+                         bootstrap_servers=f'{server}:{port}',
+                         key_deserializer=lambda k: str(k).encode('utf-8'),
+                         value_deserializer=lambda v: v.decode('utf-8'))
+
+def consume_kafka(sql_out):
+    game_calc = Calculation(sql_out)
+    consumer = set_consumer(server='localhost', port=9092, topic='game-events')
+    consumer.subscribe(['game-events'])
+    for msg in consumer:
+        print(f'Received message: {msg}')
+        game_calc.receive_event(msg.value)
 
 class Calculation:
     game_state: pd.DataFrame
