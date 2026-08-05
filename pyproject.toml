@@ -4,9 +4,11 @@ version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.116.1",
+    "kafka-python>=3.0.10",
     "pandas>=3.0.5",
     "pandas-stubs~=3.0.5",
     "psycopg[binary]>=3.3.4",
+    "python-dotenv>=1.2.2",
     "sqlalchemy>=2.0.51",
     "uvicorn>=0.35.0",
 ]
