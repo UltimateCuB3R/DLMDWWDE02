@@ -1,5 +1,43 @@
 from ingestion import ingest
 import pandas as pd
+from kafka import KafkaProducer
+import json
+
+
+def set_producer(server='localhost', port=9092):
+    return KafkaProducer(bootstrap_servers=f'{server}:{port}',
+                         key_serializer=lambda k: str(k).encode('utf-8'),
+                         value_serializer=lambda v: json.dumps(v).encode('utf-8'))
+
+
+def replay_kafka(sql_in):
+    producer = set_producer(server='localhost', port=9092)
+
+    tables = _get_tables(sql_in)
+
+    for event in replay(tables):
+        future = producer.send(topic='game-events', key=event['game-id'], value=event)
+        result = future.get(timeout=10)  # Warten auf Rückmeldung # TODO: is this necessary in production?
+        print(f'Result: {result}')
+        print(f'Producer Metrics: {producer.metrics()}')
+
+
+def _get_tables(sql_in) -> list[ingest.PdTable]:
+    tables = []
+    games_df = pd.read_sql_query('SELECT * FROM public.games LIMIT 2', sql_in)
+    # read the events that fit the game ids
+    game_ids = games_df["Game"].tolist()
+    events_df = pd.read_sql_query(f'SELECT * FROM public.events WHERE "Game" IN ({",".join(map(str, game_ids))})',
+                                  sql_in)
+    pitches_df = pd.read_sql_query(
+        f'SELECT * FROM public.pitches WHERE "Game" IN ({",".join(map(str, game_ids))})', sql_in)
+    print('SqlIn - All Tables loaded from db')
+
+    games_table = ingest.PdTable(table_name='games', df=games_df)
+    events_table = ingest.PdTable(table_name='events', df=events_df)
+    pitches_table = ingest.PdTable(table_name='pitches', df=pitches_df)
+    tables.extend([games_table, events_table, pitches_table])
+    return tables
 
 
 def replay(tables: list[ingest.PdTable]):
@@ -67,7 +105,6 @@ def replay(tables: list[ingest.PdTable]):
         for _, event in game_events.iterrows():
             event_id = event.get("Event Id")
             this_inning = event.get("Inning")
-
 
             if this_inning != current_inning:
                 current_event = {
