@@ -2,6 +2,7 @@ import sqlite3
 import psycopg
 import sqlalchemy
 
+
 def create_engine(connection_string):
     return sqlalchemy.create_engine(connection_string)
 
@@ -79,4 +80,5 @@ if __name__ == "__main__":
 
     sql_pq = create_postgres_connection(dbname="postgres", user="postgres", password="mysecretpassword")
     print(f'Connected to {sql_pq}')
-    create_table(sql_pq, create_table_sql='CREATE TABLE IF NOT EXISTS test_games (Game INTEGER PRIMARY KEY, Date TEXT, HomeTeam TEXT, AwayTeam TEXT, HomeScore INTEGER, AwayScore INTEGER, Venue TEXT, Attendance INTEGER, Duration TEXT, Notes TEXT)')
+    create_table(sql_pq,
+                 create_table_sql='CREATE TABLE IF NOT EXISTS test_games (Game INTEGER PRIMARY KEY, Date TEXT, HomeTeam TEXT, AwayTeam TEXT, HomeScore INTEGER, AwayScore INTEGER, Venue TEXT, Attendance INTEGER, Duration TEXT, Notes TEXT)')
