@@ -14,8 +14,8 @@
         <column name="runner-1" dtype="str"/>
         <column name="runner-2" dtype="str"/>
         <column name="runner-3" dtype="str"/>
-        <column name="away-score" dtype="str"/>
-        <column name="home-score" dtype="str"/>
+        <column name="away-score" dtype="int64"/>
+        <column name="home-score" dtype="int64"/>
         <column name="pitcher" dtype="str"/>
         <column name="game-running" dtype="bool"/>
     </TABLE>
@@ -24,8 +24,8 @@
         <column name="inning" dtype="str"/>
         <column name="batting-team" dtype="str"/>
         <column name="pitching-team" dtype="str"/>
-        <column name="away-score" dtype="str"/>
-        <column name="home-score" dtype="str"/>
+        <column name="away-score" dtype="int64"/>
+        <column name="home-score" dtype="int64"/>
         <column name="inning-running" dtype="bool"/>
     </TABLE>
 </TABLES>
