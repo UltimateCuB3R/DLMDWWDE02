@@ -1,7 +1,14 @@
+import sqlalchemy
+
 from ingestion import ingest
 import pandas as pd
 from kafka import KafkaProducer
 import json
+from dotenv import load_dotenv
+import os
+import time
+
+load_dotenv()
 
 
 def set_producer(server='localhost', port=9092):
@@ -10,21 +17,31 @@ def set_producer(server='localhost', port=9092):
                          value_serializer=lambda v: json.dumps(v).encode('utf-8'))
 
 
-def replay_kafka(sql_in):
-    producer = set_producer(server='localhost', port=9092)
+def replay_kafka():
+    replay_delay = float(os.getenv('KAFKA_REPLAY_DELAY', '0.5'))  # delay in seconds between events
 
-    tables = _get_tables(sql_in)
+    producer = set_producer(server=os.getenv('KAFKA_HOST', 'localhost'),
+                            port=int(os.getenv('KAFKA_PORT', 9092)))
 
+    sql_string = os.getenv("POSTGRES_DB_CONNECT_STRING")
+    if sql_string:
+        sql_engine = sqlalchemy.create_engine(sql_string)
+    else:
+        raise Exception("No database connection string provided in environment variables.")
+    tables = _get_tables(sql_engine)
+
+    # kafka_key = 0  # internal replay key to secure right order
     for event in replay(tables):
-        future = producer.send(topic='game-events', key=event['game-id'], value=event)
-        result = future.get(timeout=10)  # Warten auf Rückmeldung # TODO: is this necessary in production?
-        print(f'Result: {result}')
-        print(f'Producer Metrics: {producer.metrics()}')
+        future = producer.send(topic=os.getenv('KAFKA_TOPIC', 'game-events'), key=event["game-id"], value=event)
+        result = future.get(timeout=10)  # wait for response, so it's synchronous processing
+        print(f'Message sent for event: {event}')
+        # kafka_key += 1
+        time.sleep(replay_delay)
 
 
 def _get_tables(sql_in) -> list[ingest.PdTable]:
     tables = []
-    games_df = pd.read_sql_query('SELECT * FROM public.games LIMIT 2', sql_in)
+    games_df = pd.read_sql_query('SELECT * FROM public.games LIMIT 2', sql_in)  # TODO: remove LIMIT 2 in production
     # read the events that fit the game ids
     game_ids = games_df["Game"].tolist()
     events_df = pd.read_sql_query(f'SELECT * FROM public.events WHERE "Game" IN ({",".join(map(str, game_ids))})',
@@ -41,11 +58,11 @@ def _get_tables(sql_in) -> list[ingest.PdTable]:
 
 
 def replay(tables: list[ingest.PdTable]):
-    # replay_mode is always "pitch-by-pitch"
-    current_event = None
+    # replay mode is always pitch by pitch
     table_games: pd.DataFrame | None = None
     table_events: pd.DataFrame | None = None
     table_pitches: pd.DataFrame | None = None
+
     for table in tables:
         match table.table_name:
             case "games":
