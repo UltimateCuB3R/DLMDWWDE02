@@ -3,17 +3,40 @@ from replay import replay
 from data import database
 from calculation import calc
 import pandas as pd
+from threading import Thread
+import time
 
 LOAD_CSV = False
-SQL_TYPE = 'PGSQL'  # SQLITE
-WRITE_SQL = False
+SQL_TYPE = 'PGSQL'  # deprecated
+WRITE_SQL = False  # deprecated
 REPLAY = True
-KAFKA = True
+KAFKA = True  # deprecated
 CONSUME = True
 
 if __name__ == '__main__':
     print('Data Engineering')
+    if LOAD_CSV:
+        tables = ingest.start_ingestion('raw_data/')
+        print(f'{len(tables)} tables loaded.')
+    else:
+        print('No Load CSV started.')
 
+    if CONSUME:
+        print('Starting consumer thread...')
+        consumer_thread = Thread(target=calc.start_calculation, daemon=True)
+        consumer_thread.start()
+        time.sleep(2) # wait 2s for Consumer
+        print('Consumer was started.')
+
+    if REPLAY:
+        print('Starting Replay to Kafka...')
+        replay.replay_kafka()
+        print('Replay ended.')
+
+    else:
+        print('No Replay started.')
+
+if __name__ == 'old':
     if LOAD_CSV:
         games_table = ingest._load_csv_into_table("raw_data/games.csv", "games")
         print('Games Table loaded from csv')
