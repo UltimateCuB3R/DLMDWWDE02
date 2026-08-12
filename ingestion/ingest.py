@@ -9,7 +9,7 @@ from logging.handlers import RotatingFileHandler
 
 load_dotenv()
 
-DB_DEFINITION = Path('table_definition.xml')
+DB_DEFINITION = Path('./calculation/table_definition.xml')
 # load encoding from env
 ENCODING = os.getenv("ENCODING", "utf-8")
 
@@ -24,6 +24,8 @@ class StreamFilter(logging.Filter):
 
 def set_logger(log_name: str, log_level: str = "INFO", log_path: str = "./logs"):
     logger = logging.getLogger(log_name)
+    if logger.hasHandlers():
+        logger.handlers.clear()
     logger.setLevel(getattr(logging, log_level.upper()))
     if not os.path.exists(log_path):
         os.makedirs(log_path)
@@ -62,10 +64,11 @@ def start_ingestion(file_path: str) -> dict:
 
     LOGGER.info('Saving tables to database.')
     games_table.to_sql('games', sql_engine, if_exists='replace', index=False)
+    LOGGER.info(f'Successfully saved table to database: games with {len(games_table)} records.')
     events_table.to_sql('events', sql_engine, if_exists='replace', index=False)
+    LOGGER.info(f'Successfully saved table to database: events with {len(events_table)} records.')
     pitches_table.to_sql('pitches', sql_engine, if_exists='replace', index=False)
-
-    LOGGER.info(f'Successfully saved tables to database: games, events, pitches')
+    LOGGER.info(f'Successfully saved table to database: pitches with {len(pitches_table)} records.')
     return {
         "games": len(games_table),
         "events": len(events_table),
