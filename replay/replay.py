@@ -23,6 +23,8 @@ class StreamFilter(logging.Filter):
 
 def set_logger(log_name: str, log_level: str = "INFO", log_path: str = "./logs"):
     logger = logging.getLogger(log_name)
+    if logger.hasHandlers():
+        logger.handlers.clear()
     logger.setLevel(getattr(logging, log_level.upper()))
     if not os.path.exists(log_path):
         os.makedirs(log_path)
@@ -85,6 +87,8 @@ def _get_tables(sql_in):
 
     return games_df, events_df, pitches_df
 
+def _generate_timestamp():
+    return int(time.time() * 1000)  # milliseconds since epoch
 
 def replay(table_games: pd.DataFrame, table_events: pd.DataFrame, table_pitches: pd.DataFrame):
     # table_games
@@ -113,6 +117,7 @@ def replay(table_games: pd.DataFrame, table_events: pd.DataFrame, table_pitches:
         # game start
         current_event = {
             "event-type": "game-start",
+            "event-timestamp": _generate_timestamp(),
             "game-id": game_id,
             "away": game.get("away"),
             "home": game.get("home"),
@@ -138,6 +143,7 @@ def replay(table_games: pd.DataFrame, table_events: pd.DataFrame, table_pitches:
             if this_inning != current_inning:
                 current_event = {
                     "event-type": "inning-start",
+                    "event-timestamp": _generate_timestamp(),
                     "game-id": game_id,
                     "event-id": event_id,
                     "batting-team": event.get("Batting Team"),
@@ -153,6 +159,7 @@ def replay(table_games: pd.DataFrame, table_events: pd.DataFrame, table_pitches:
             for _, pitch in event_pitches.iterrows():
                 current_event = {
                     "event-type": "pitch",
+                    "event-timestamp": _generate_timestamp(),
                     "game-id": game_id,
                     "event-id": event_id,
                     "pitcher": pitch.get("Pitcher"),
@@ -162,12 +169,14 @@ def replay(table_games: pd.DataFrame, table_events: pd.DataFrame, table_pitches:
                     "pitch-speed": pitch.get("MPH"),
                     "pitch-location": pitch.get("play-hitzone"),
                     "play-bases": pitch.get("play-bases"),
+                    "pitching-team": event.get("Pitching Team")
                 }
                 yield current_event
 
             # actual event on last pitch
             current_event = {
                 "event-type": "event",
+                "event-timestamp": _generate_timestamp(),
                 "game-id": game_id,
                 "event-id": event_id,
                 "batting-team": event.get("Batting Team"),
@@ -183,6 +192,7 @@ def replay(table_games: pd.DataFrame, table_events: pd.DataFrame, table_pitches:
             if event_id == last_event_of_inning.get(this_inning):
                 current_event = {
                     "event-type": "inning-end",
+                    "event-timestamp": _generate_timestamp(),
                     "game-id": game_id,
                     "event-id": event_id,
                     "batting-team": event.get("Batting Team"),
@@ -196,6 +206,7 @@ def replay(table_games: pd.DataFrame, table_events: pd.DataFrame, table_pitches:
         # game end
         current_event = {
             "event-type": "game-end",
+            "event-timestamp": _generate_timestamp(),
             "game-id": game.get("Game"),
             "away-score": game.get("away-score"),
             "home-score": game.get("home-score"),
