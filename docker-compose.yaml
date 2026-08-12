@@ -6,7 +6,10 @@ services:
       - "3000:3000"
 
   jobmanager:
-    image: flink:latest
+    build:
+        context: ./calculation
+        dockerfile: Dockerfile
+    container_name: mlb-jobmanager
     ports:
       - "8081:8081"
     command: jobmanager
@@ -16,7 +19,10 @@ services:
         jobmanager.rpc.address: jobmanager
 
   taskmanager:
-    image: flink:latest
+    build:
+        context: ./calculation
+        dockerfile: Dockerfile
+    container_name: mlb-taskmanager
     depends_on:
       - jobmanager
     command: taskmanager
@@ -85,13 +91,13 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
-  ingest:
-    build: ./ingest
-    container_name: mlb-ingest
-    depends_on:
-      - postgres
-    environment:
-      - POSTGRES_DB_CONNECT_STRING="postgresql+psycopg://postgres:mysecretpassword@localhost:5432/postgres"
+  #ingest:
+  #  build: ./ingest
+  #  container_name: mlb-ingest
+  #  depends_on:
+  #    - postgres
+  #  environment:
+  #    - POSTGRES_DB_CONNECT_STRING="postgresql+psycopg://postgres:mysecretpassword@localhost:5432/postgres"
 volumes:
     postgres_data:
     kafka_data:

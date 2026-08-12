@@ -1,0 +1,6 @@
+pandas>=3.0.5
+SQLAlchemy>=2.0.51
+kafka-python>=3.0.10
+python-dotenv>=1.2.2
+apache-flink==2.1.0
+psycopg[binary]>=3.3.4

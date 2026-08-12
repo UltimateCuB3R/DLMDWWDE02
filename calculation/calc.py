@@ -27,9 +27,11 @@ class StreamFilter(logging.Filter):
             return False
 
 
-def set_logger(log_name: str, log_level: str = "INFO", log_path: str = "./logs"):
+def set_logger(log_name: str, log_level=logging.DEBUG, log_path: str = "./logs"):
     logger = logging.getLogger(log_name)
-    logger.setLevel(getattr(logging, log_level.upper()))
+    if logger.hasHandlers():
+        logger.handlers.clear()
+    logger.setLevel(log_level)
     if not os.path.exists(log_path):
         os.makedirs(log_path)
     log_file = os.path.join(log_path, f"{log_name}.log")
@@ -45,8 +47,7 @@ def set_logger(log_name: str, log_level: str = "INFO", log_path: str = "./logs")
     return logger
 
 
-LOGGER = set_logger(os.getenv("LOGGER_NAME", "calculation"), os.getenv("LOGGER_LEVEL", "INFO"),
-                    os.getenv("LOGGER_PATH", "./logs"))
+LOGGER = set_logger(os.getenv("LOGGER_NAME", "calculation"), log_path=os.getenv("LOGGER_PATH", "./logs"))
 
 
 def _load_table_definition(table_name: str) -> dict[str, str]:
@@ -92,20 +93,22 @@ def start_calculation():
     for msg in consumer:
         LOGGER.info(f"Received message: {msg}")
         try:
-            game_state = game_calc.receive_event(msg.value)
-            LOGGER.debug(f"Received game state: {game_state}")
+            total_state = game_calc.receive_event(msg.value)
+            LOGGER.debug(f"Received total state: {total_state}")
         except pandas.errors.DatabaseError as e:
             LOGGER.critical(f"DatabaseError processing event: {e}")
 
 
 class Calculation:
     game_state: dict
-    innings: pd.DataFrame
+    inning_state: dict
+    pitcher_state: dict
     db_con: sqlalchemy.Engine
 
     def __init__(self, db_con):
         self._def_game_state: dict[str, str] = _load_table_definition("game_state")
         self._def_innings: dict[str, str] = _load_table_definition("innings")
+        self._def_pitchers: dict[str, str] = _load_table_definition("pitchers")
         self.db_con = db_con
         self._init_tables()
 
@@ -114,55 +117,100 @@ class Calculation:
         db_inspect = sqlalchemy.inspect(self.db_con)
 
         self.game_state = {key: None for key in self._def_game_state.keys()}
-        # LOGGER.debug(f'Game state after init: {self.game_state}')
+        LOGGER.debug(f'Game state after init: {self.game_state}')
         if not db_inspect.has_table("game_state"):
-            sql_result = pd.DataFrame(columns=list(self._def_game_state.keys())).to_sql('game_state', self.db_con,
-                                                                                        if_exists='replace',
-                                                                                        index=False)
-            # LOGGER.debug(f'SQL result of game_state initialization: {sql_result}')
+            game_df = pd.DataFrame({c: pd.Series(dtype=t) for c, t in self._def_game_state.items()})
+            sql_result = game_df.to_sql('game_state', self.db_con, if_exists='replace', index=False)
+            LOGGER.debug(f'SQL result of game_state initialization: {sql_result}')
 
-        self.innings = pd.DataFrame(columns=list(self._def_innings.keys()))
-        # LOGGER.debug(f'[DEBUG] Innings state after init: {self.innings}')
+        self.inning_state = {key: None for key in self._def_innings.keys()}
+        LOGGER.debug(f'Inning state after init: {self.inning_state}')
         if not db_inspect.has_table("innings"):
-            sql_result = self.innings.to_sql('innings', self.db_con, if_exists='replace', index=False)
-            # LOGGER.debug(f'SQL result of innings initialization: {sql_result}')
+            innings_df = pd.DataFrame({c: pd.Series(dtype=t) for c, t in self._def_innings.items()})
+            sql_result = innings_df.to_sql('innings', self.db_con, if_exists='replace', index=False)
+            LOGGER.debug(f'SQL result of innings initialization: {sql_result}')
+
+        self.pitcher_state = {key: None for key in self._def_pitchers.keys()}
+        LOGGER.debug(f'Pitcher state after init: {self.pitcher_state}')
+        if not db_inspect.has_table("pitchers"):
+            pitchers_df = pd.DataFrame({c: pd.Series(dtype=t) for c, t in self._def_pitchers.items()})
+            sql_result = pitchers_df.to_sql('pitchers', self.db_con, if_exists='replace', index=False)
+            LOGGER.debug(f'SQL result of pitchers initialization: {sql_result}')
 
         LOGGER.info('Tables initialized.')
 
     def _read_game_state(self, game_id):
-        game_state = pd.read_sql_query(f'SELECT * FROM public.game_state WHERE "game-id" = {game_id}', self.db_con,
-                                       index_col=["game-id"])
+        game_df = pd.read_sql_query(f"SELECT * FROM public.game_state WHERE game = '{game_id}'", self.db_con)
         # determine length of dataframe, if 1 then read first row as dict, if 0 then create new row with default values, if >1 then raise error
-        if len(game_state) == 1:
-            self.game_state = game_state.iloc[0].to_dict()
-        elif len(game_state) == 0:
+        if len(game_df) == 1:
+            self.game_state = game_df.iloc[0].to_dict()
+            LOGGER.debug(f"Read game state for game_id {game_id}: {self.game_state}")
+        elif len(game_df) == 0:
             self.game_state = {key: None for key in self._def_game_state.keys()}
+            LOGGER.debug(
+                f"No game state found for game_id {game_id}, initialized with default values: {self.game_state}")
         else:
-            LOGGER.critical(f"Unexpected number of rows in game_state for game_id {game_id}: {len(game_state)}")
+            LOGGER.critical(f"Unexpected number of rows in game_state for game_id {game_id}: {len(game_df)}")
             raise ValueError("Unexpected number of rows in game_state")
-        # LOGGER.debug(f'Read Game state: {self.game_state}')
 
-    def _read_game_innings(self, game_id):
-        self.innings = pd.read_sql_query(f'SELECT * FROM public.innings WHERE "game-id" = {game_id}', self.db_con,
-                                         index_col=["game-id", "inning"])
-        # LOGGER.debug(f'Read Innings state: {self.innings}')
+    def _read_game_innings(self, game_id, inning):
+        inning_df = pd.read_sql_query(f"SELECT * FROM public.innings WHERE game = '{game_id}' AND inning = '{inning}'",
+                                      self.db_con)
+        if len(inning_df) == 1:
+            self.inning_state = inning_df.iloc[0].to_dict()
+            LOGGER.debug(f"Read inning state for game_id {game_id}, inning {inning}: {self.inning_state}")
+        elif len(inning_df) == 0:
+            self.inning_state = {key: None for key in self._def_innings.keys()}
+            LOGGER.debug(
+                f"No inning state found for game_id {game_id}, inning {inning}, initialized with default values: {self.inning_state}")
+        else:
+            LOGGER.critical(
+                f"Unexpected number of rows in innings for game_id {game_id}, inning {inning}: {len(inning_df)}")
+            raise ValueError("Unexpected number of rows in innings")
+
+    def _read_game_pitchers(self, game_id, pitcher):
+        pitcher_df = pd.read_sql_query(
+            f"SELECT * FROM public.pitchers WHERE game = '{game_id}' AND pitcher = '{pitcher}'", self.db_con)
+        if len(pitcher_df) == 1:
+            self.pitcher_state = pitcher_df.iloc[0].to_dict()
+            LOGGER.debug(f"Read pitcher state for game_id {game_id}, pitcher {pitcher}: {self.pitcher_state}")
+        elif len(pitcher_df) == 0:
+            self.pitcher_state = {key: None for key in self._def_pitchers.keys()}
+            LOGGER.debug(
+                f"No pitcher state found for game_id {game_id}, pitcher {pitcher}, initialized with default values: {self.pitcher_state}")
+        else:
+            LOGGER.critical(
+                f"Unexpected number of rows in pitchers for game_id {game_id}, pitcher {pitcher}: {len(pitcher_df)}")
+            raise ValueError("Unexpected number of rows in pitchers")
 
     def _save_game_state(self):
-        # LOGGER.debug(f'Saving game state: {self.game_state}')
-        result = pd.DataFrame([self.game_state]).to_sql('game_state', self.db_con, if_exists='replace', index=False)
-        # LOGGER.debug(f'result of to_sql (game_state): {result}')
+        LOGGER.debug(f'Saving game state: {self.game_state}')
+        game_df = pd.DataFrame({c: pd.Series(dtype=t) for c, t in self._def_game_state.items()})
+        game_df.loc[0] = self.game_state
+        LOGGER.debug(f'Game state DataFrame to save: {game_df}')
+        result = game_df.to_sql('game_state', self.db_con, if_exists='replace', index=False)
+        LOGGER.debug(f'result of to_sql (game_state): {result}')
 
     def _save_game_innings(self):
-        # LOGGER.debug(f'Saving innings state: {self.innings}')
-        result = self.innings.to_sql('innings', self.db_con, if_exists='replace', index=True)
-        # LOGGER.debug(f'result of to_sql (innings): {result}')
+        LOGGER.debug(f'Saving innings state: {self.inning_state}')
+        inning_df = pd.DataFrame({c: pd.Series(dtype=t) for c, t in self._def_innings.items()})
+        inning_df.loc[0] = self.inning_state
+        LOGGER.debug(f'Inning state DataFrame to save: {inning_df}')
+        result = inning_df.to_sql('innings', self.db_con, if_exists='replace', index=False)
+        LOGGER.debug(f'result of to_sql (innings): {result}')
+
+    def _save_game_pitchers(self):
+        LOGGER.debug(f'Saving pitchers state: {self.pitcher_state}')
+        pitcher_df = pd.DataFrame({c: pd.Series(dtype=t) for c, t in self._def_pitchers.items()})
+        pitcher_df.loc[0] = self.pitcher_state
+        LOGGER.debug(f'Pitcher state DataFrame to save: {pitcher_df}')
+        result = pitcher_df.to_sql('pitchers', self.db_con, if_exists='replace', index=False)
+        LOGGER.debug(f'result of to_sql (pitchers): {result}')
 
     def receive_event(self, event: dict[str, Any]):
         game_id = event["game-id"]
         # read game state and innings via sqlalchemy
         self._read_game_state(game_id)
-        self._read_game_innings(game_id)
-        # TODO: Pitch counter per Pitcher per Game
 
         try:
             LOGGER.info(f'Processing event-type {event["event-type"]}')
@@ -171,25 +219,32 @@ class Calculation:
                     self._process_game(event)
                     self._save_game_state()
                 case "inning-start" | "inning-end":
+                    self._read_game_innings(game_id, event["inning"])
                     self._process_inning(event)
                     self._save_game_state()
                     self._save_game_innings()
                 case "pitch":
+                    self._read_game_pitchers(game_id, event["pitcher"])
                     self._process_pitch(event)
+                    self._save_game_state()
+                    self._save_game_pitchers()  # Pitch counter per Pitcher per Game
                 case "event":
                     self._process_event(event)
                     self._save_game_state()
         except ValueError:
-            # TODO: return information about broken order or event-type
             LOGGER.critical(f"Error processing event: {event}")
 
-        return self.game_state
+        return {
+            "game-state": self.game_state,
+            "inning-state": self.inning_state,
+            "pitcher-state": self.pitcher_state
+        }
 
     def _process_game(self, event: dict[str, Any]):
         if event["event-type"] == "game-start":
             LOGGER.info(f"Game started: {event['game-id']}")
             # check if game is already running
-            if self.game_state["game-id"] == event["game-id"]:
+            if self.game_state["game"] == event["game-id"]:
                 LOGGER.critical(f"Game with ID {event['game-id']} already started!")
                 raise ValueError(f"Game with ID {event['game-id']} already started!")
 
@@ -201,7 +256,7 @@ class Calculation:
                 if key in event.keys():
                     self.game_state[key] = event[key]
                 else:
-                    if key == "game-id":
+                    if key == "game":
                         self.game_state[key] = event["game-id"]
                     elif key == "away-score" or key == "home-score" or key == "out":
                         self.game_state[key] = 0
@@ -209,8 +264,9 @@ class Calculation:
                         self.game_state[key] = True
                     else:
                         self.game_state[key] = None
-
-
+                if key == "location" or key == "stadium":
+                    # strip all tabs, newlines and multiple spaces from location and stadium
+                    self.game_state[key] = " ".join(event[key].split()) if event[key] else ""
 
         elif event["event-type"] == "game-end":
             LOGGER.info(f"Game ended: {event['game-id']}")
@@ -228,7 +284,6 @@ class Calculation:
             self.game_state["duration"] = event["duration"]
             self.game_state["game-running"] = False
 
-
         else:
             LOGGER.critical(f"Invalid event-type: {event['event-type']}")
             raise ValueError("Invalid event-type")
@@ -239,36 +294,26 @@ class Calculation:
             # create a new half-inning entry for this game id
             # static: game-id, batting-team, pitching-team, inning
             # initialize the dynamic values: away-score, home-score
-            event_data = []
             for key in self._def_innings.keys():
                 if key in event.keys():
-                    event_data.append(event[key])
+                    self.inning_state[key] = event[key]
                 else:
-                    if key == "game-id":
-                        event_data.append(event["game-id"])
-                    elif key == "away-score":
-                        event_data.append(0)
-                    elif key == "home-score":
-                        event_data.append(0)
+                    if key == "game":
+                        self.inning_state[key] = event["game-id"]
+                    elif key == "away-score" or key == "home-score":
+                        self.inning_state[key] = 0
                     elif key == "inning-running":
-                        event_data.append(True)
+                        self.inning_state[key] = True
                     else:
-                        event_data.append(None)
-            this_inning = pd.Series(index=self._def_innings.keys(), data=event_data)
-            self.innings.loc[(event["game-id"], event["inning"]), :] = this_inning
-            # LOGGER.debug(f'Inning data: {this_inning}')
-
+                        self.inning_state[key] = None
             self.game_state["inning"] = event["inning"]
 
         elif event["event-type"] == "inning-end":
             LOGGER.info(f"Inning ended: {event['inning']} in game {event['game-id']}")
             # set the dynamic values: away-score, home-score
-            this_inning = self.innings.loc[(event["game-id"], event["inning"]), :]
-            this_inning["away-score"] = self._to_int(event["away-score"])
-            this_inning["home-score"] = self._to_int(event["home-score"])
-            this_inning["inning-running"] = False
-            self.innings.loc[(event["game-id"], event["inning"]), :] = this_inning
-            # LOGGER.debug(f'Inning data: {this_inning}')
+            self.inning_state["away-score"] = self._to_int(event["away-score"])
+            self.inning_state["home-score"] = self._to_int(event["home-score"])
+            self.inning_state["inning-running"] = False
 
             self.game_state["out"] = 0
             self.game_state["count"] = ''
@@ -284,22 +329,30 @@ class Calculation:
         if event["event-type"] == "pitch":
             LOGGER.info(f"Pitch: {event['pitch-id']} for event {event['event-id']} of game {event['game-id']}")
             # create new pitch entry for game id and event id
-            # values: pitcher, pitch-id, pitch, pitch-type, pitch-speed, pitch-location
+            # values: pitcher, pitch-id, pitch, pitch-type, pitch-speed, pitch-location, pitching-team
             # calculation needed: pitch -> call (strike/ball)
+            if event["pitch-id"] == 1:
+                self.game_state["count"] = "0-0"
+
+            balls, strikes = self.game_state["count"].split("-") if self.game_state["count"] else (0, 0)
+            balls = self._to_int(balls)
+            strikes = self._to_int(strikes)
+
             pitch = str(event["pitch"]).lower()
             if "strike" in pitch or "bunted foul" in pitch:
-                self.game_state["strikes"] += 1
+                strikes += 1
             elif "ball" in pitch and not "foul" in pitch and not "hit by" in pitch:
-                self.game_state["balls"] += 1
+                balls += 1
             elif "foul" in pitch and not "foul out" in pitch:
-                if self.game_state["strikes"] < 2:
-                    self.game_state["strikes"] += 1
-            self.game_state["count"] = f"{self.game_state['balls']}-{self.game_state['strikes']}"
+                if strikes < 2:
+                    strikes += 1
+            self.game_state["count"] = f"{balls}-{strikes}"
             self.game_state["pitcher"] = event["pitcher"]
-            # pitch_count["pitcher"] += 1  # TODO: implement pitch count per pitcher
             self.game_state["pitch-type"] = event["pitch-type"]
             self.game_state["pitch-speed"] = event["pitch-speed"]
+
             if event["pitch-location"] is not None:
+                # extract pitch location from string like "top: 123.45px; right: 67.89px;"
                 match = re.search(
                     r"top:\s*([0-9]+(?:\.[0-9]+)?)px;\s*right:\s*([0-9]+(?:\.[0-9]+)?)px;",
                     str(event["pitch-location"]),
@@ -307,10 +360,21 @@ class Calculation:
                 if match:
                     self.game_state["pitch_y"] = float(match.group(1))
                     self.game_state["pitch_x"] = float(match.group(2))
+
             if event["play-bases"] is not None:
+                # set all runner on bases
                 self.game_state["runner-1"] = "X" if "1" in str(event["play-bases"]) else ""
                 self.game_state["runner-2"] = "X" if "2" in str(event["play-bases"]) else ""
                 self.game_state["runner-3"] = "X" if "3" in str(event["play-bases"]) else ""
+
+            # update pitcher state with pitch count
+            if self.pitcher_state.get("pitcher") is None:
+                self.pitcher_state["pitcher"] = event["pitcher"]
+                self.pitcher_state["game"] = event["game-id"]
+                self.pitcher_state["team"] = event["pitching-team"]
+                self.pitcher_state["pitches"] = 1
+            else:
+                self.pitcher_state["pitches"] = self._to_int(self.pitcher_state["pitches"]) + 1
         else:
             LOGGER.critical(f"Invalid event-type: {event['event-type']}")
             raise ValueError("Invalid event-type")
@@ -338,25 +402,174 @@ class Calculation:
 
     @staticmethod
     def _to_int(value: Any) -> int:
-        if pd.isna(value):
+        try:
+            return int(value)
+        except (ValueError, TypeError):
             return 0
-        numeric_value = pd.to_numeric(value, errors="coerce")
-        if pd.isna(numeric_value):
-            return 0
-        return int(numeric_value)
 
+
+def get_sql_engine() -> sqlalchemy.engine.base.Engine:
+    sql_string = os.getenv("POSTGRES_DB_CONNECT_STRING")
+    if sql_string:
+        sql_engine = sqlalchemy.create_engine(sql_string)
+        LOGGER.debug(f"Database connection string: {sql_string}")
+    else:
+        LOGGER.critical("No database connection string provided in environment variables.")
+        raise Exception("No database connection string provided in environment variables.")
+    return sql_engine
+
+
+def _get_insert_statement(table_name: str, data: dict, key_columns: list) -> sqlalchemy.TextClause:
+    columns = ', '.join(data.keys())
+    placeholders = ', '.join(['%s'] * len(data))
+    return sqlalchemy.sql.text(
+        f"INSERT INTO {table_name} ({columns}) VALUES ({placeholders}) ON CONFLICT ({', '.join(key_columns)}) DO UPDATE SET " + \
+        ', '.join([f"{col} = EXCLUDED.{col}" for col in data.keys() if col not in key_columns]))
+
+
+from pyflink.common import Types
 from pyflink.datastream import StreamExecutionEnvironment
-from pyflink.table import StreamTableEnvironment, EnvironmentSettings
+from pyflink.datastream.functions import MapFunction
 
-def start_pyflink():
+from pyflink.datastream.connectors.kafka import KafkaSource
+from pyflink.datastream.connectors.kafka import KafkaOffsetsInitializer
+
+from pyflink.common.serialization import SimpleStringSchema
+from pyflink.common.watermark_strategy import TimestampAssigner
+from pyflink.common.watermark_strategy import WatermarkStrategy
 
 
+# --------------------------------------------------------
+# PostgreSQL Sink
+# --------------------------------------------------------
+
+class GameStateSink(MapFunction):
+    conn: sqlalchemy.engine.base.Connection
+
+    def open(self, runtime_context):
+        self.conn = get_sql_engine().connect().execution_options(isolation_level="AUTOCOMMIT")
+
+    def map(self, value):
+        if value.get("game-state"):
+            self.conn.execute(_get_insert_statement("game_state", value["game-state"], ["game"]),
+                              value["game-state"].values())
+        return value
+
+    def close(self):
+        self.conn.close()
+
+
+class InningStateSink(MapFunction):
+    conn: sqlalchemy.engine.base.Connection
+
+    def open(self, runtime_context):
+        self.conn = get_sql_engine().connect().execution_options(isolation_level="AUTOCOMMIT")
+
+    def map(self, value):
+        if value.get("inning-state"):
+            self.conn.execute(_get_insert_statement("innings", value["inning-state"], ["game", "inning"]),
+                              value["inning-state"].values())
+        return value
+
+    def close(self):
+        self.conn.close()
+
+
+class PitcherStateSink(MapFunction):
+    conn: sqlalchemy.engine.base.Connection
+
+    def open(self, runtime_context):
+        self.conn = get_sql_engine().connect().execution_options(isolation_level="AUTOCOMMIT")
+
+    def map(self, value):
+        if value.get("pitcher-state"):
+            self.conn.execute(_get_insert_statement("pitchers", value["pitcher-state"], ["game", "pitcher"]),
+                              value["pitcher-state"].values())
+        return value
+
+    def close(self):
+        self.conn.close()
+
+
+# --------------------------------------------------------
+# Business Logic Wrapper
+# --------------------------------------------------------
+
+class BusinessLogicMapper(MapFunction):
+
+    def map(self, value):
+
+        event = json.loads(value)
+
+        game_calc = Calculation(get_sql_engine())
+        LOGGER.info(f"Received message: {event}")
+        try:
+            result = game_calc.receive_event(event)
+            LOGGER.debug(f"Received total state: {result}")
+        except pandas.errors.DatabaseError as e:
+            LOGGER.critical(f"DatabaseError processing event: {e}")
+            result = {
+                "game-state": None,
+                "inning-state": None,
+                "pitcher-state": None
+            }
+
+        return result
+
+
+class EventTimestampAssigner(TimestampAssigner):
+    def extract_timestamp(self, value, record_timestamp):
+        event = json.loads(value)
+        if "event-timestamp" in event:
+            return int(event["event-timestamp"])
+        else:
+            return record_timestamp
+
+
+# --------------------------------------------------------
+# Main
+# --------------------------------------------------------
+
+def main():
     env = StreamExecutionEnvironment.get_execution_environment()
-    settings = EnvironmentSettings.new_instance().in_streaming_mode().build()
-    t_env = StreamTableEnvironment.create(env, environment_settings=settings)
 
-    # Define your Flink job here
-    # For example, you can read from Kafka, process the data, and write to a sink
+    env.set_parallelism(4)
 
-    # Execute the Flink job
-    env.execute("Flink Job")
+    env.enable_checkpointing(30000)
+
+    kafka_source = (
+        KafkaSource.builder()
+        .set_bootstrap_servers(":".join([os.getenv('KAFKA_HOST', 'localhost'), os.getenv('KAFKA_PORT', '9092')]))
+        .set_topics(os.getenv('KAFKA_TOPIC', 'game-events'))
+        #.set_group_id("flink-consumer")
+        .set_starting_offsets(
+            KafkaOffsetsInitializer.earliest()
+        )
+        .set_value_only_deserializer(
+            SimpleStringSchema()
+        )
+        .build()
+    )
+
+    stream = env.from_source(
+        source=kafka_source,
+        watermark_strategy=WatermarkStrategy.for_monotonous_timestamps().with_timestamp_assigner(
+            EventTimestampAssigner()),
+        source_name=os.getenv('KAFKA_TOPIC', 'game-events')
+    )
+
+    processed_stream = stream.map(BusinessLogicMapper(), output_type=Types.PICKLED_BYTE_ARRAY())
+
+    game_stream = processed_stream.filter(lambda x: x.get("game-state") is not None)
+    inning_stream = processed_stream.filter(lambda x: x.get("inning-state") is not None)
+    pitcher_stream = processed_stream.filter(lambda x: x.get("pitcher-state") is not None)
+
+    game_stream.map(GameStateSink(), output_type=Types.PICKLED_BYTE_ARRAY())
+    inning_stream.map(InningStateSink(), output_type=Types.PICKLED_BYTE_ARRAY())
+    pitcher_stream.map(PitcherStateSink(), output_type=Types.PICKLED_BYTE_ARRAY())
+
+    env.execute("game-events-calculation")
+
+
+if __name__ == "__main__":
+    main()
