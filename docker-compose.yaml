@@ -5,44 +5,54 @@ services:
     ports:
       - "3000:3000"
 
-  jobmanager:
+
+  mlb-jobmanager:
     build:
-        context: ./calculation
-        dockerfile: Dockerfile
-    container_name: mlb-jobmanager
+      context: ./calculation
+      dockerfile: Dockerfile
+    hostname: "mlb-jobmanager"
+    expose:
+      - "6123"
     ports:
       - "8081:8081"
     command: jobmanager
     environment:
       - |
         FLINK_PROPERTIES=
-        jobmanager.rpc.address: jobmanager
+        jobmanager.rpc.address: mlb-jobmanager
+      - KAFKA_HOST=kafka
+      - KAFKA_PORT=9092
+      - KAFKA_TOPIC=game-events
+      - POSTGRES_DB_CONNECT_STRING=postgresql+psycopg://postgres:mysecretpassword@postgres:5432/postgres
+      - POSTGRES_TABLE_DEFINITION=/opt/flink/usrlib/table_definition.xml
+      - LOGGER_JOB_NAME=calculation_job
+      - LOGGER_JOB_PATH=/opt/flink/usrlib/logs/
 
-  taskmanager:
+  mlb-taskmanager:
     build:
-        context: ./calculation
-        dockerfile: Dockerfile
-    container_name: mlb-taskmanager
+      context: ./calculation
+      dockerfile: Dockerfile
+    hostname: "mlb-taskmanager"
     depends_on:
-      - jobmanager
+      - mlb-jobmanager
+    expose:
+      - "6121"
+      - "6122"
     command: taskmanager
-    scale: 1
+    links:
+        - mlb-jobmanager:mlb-jobmanager
     environment:
       - |
         FLINK_PROPERTIES=
-        jobmanager.rpc.address: jobmanager
-        taskmanager.numberOfTaskSlots: 2
-
-  #sql-client:
-  #  image: flink:latest
-  #  depends_on:
-  #    - jobmanager
-  #  command: bin/sql-client.sh
-  #  environment:
-  #      - |
-  #        FLINK_PROPERTIES=
-  #        jobmanager.rpc.address: jobmanager
-  #        rest.address: jobmanager
+        jobmanager.rpc.address: mlb-jobmanager
+        taskmanager.numberOfTaskSlots: 1
+      - KAFKA_HOST=kafka
+      - KAFKA_PORT=9092
+      - KAFKA_TOPIC=game-events
+      - POSTGRES_DB_CONNECT_STRING=postgresql+psycopg://postgres:mysecretpassword@postgres:5432/postgres
+      - POSTGRES_TABLE_DEFINITION=/opt/flink/usrlib/table_definition.xml
+      - LOGGER_JOB_NAME=calculation_job
+      - LOGGER_JOB_PATH=/opt/flink/usrlib/
 
   kafka:
     image: apache/kafka:latest
@@ -54,7 +64,7 @@ services:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093

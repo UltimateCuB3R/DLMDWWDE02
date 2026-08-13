@@ -3,17 +3,13 @@ from replay import replay
 from calculation import calc
 from threading import Thread
 import time
-import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
 LOAD_CSV = False
-SQL_TYPE = 'PGSQL'  # deprecated
-WRITE_SQL = False  # deprecated
 REPLAY = True
-KAFKA = True  # deprecated
-CONSUME = True
+CONSUME = False
 
 if __name__ == '__main__':
     print('Data Engineering')

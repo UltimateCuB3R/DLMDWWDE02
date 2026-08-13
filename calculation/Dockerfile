@@ -1,36 +1,30 @@
-FROM apache/flink:2.1.0-java21
-ARG FLINK_VERSION=2.1.0
+FROM flink:1.18.1
+
+# Install Python
+RUN apt-get update -y && \
+apt-get install -y python3 python3-pip python3-dev && \
+rm -rf /var/lib/apt/lists/*
+
+# Ensure python command points to python3
+RUN ln -s /usr/bin/python3 /usr/bin/python
 
 COPY requirements.txt /tmp/requirements.txt
 COPY calc.py /opt/flink/usrlib/calc.py
 COPY table_definition.xml /opt/flink/usrlib/table_definition.xml
 
-# Install python3.12 and pyflink
-RUN set -ex; \
-  apt-get update && \
-  apt-get install -y build-essential libssl-dev zlib1g-dev libbz2-dev libffi-dev lzma liblzma-dev && \
-  wget https://www.python.org/ftp/python/3.12.13/Python-3.12.13.tgz && \
-  tar -xvf Python-3.12.13.tgz && \
-  cd Python-3.12.13 && \
-  ./configure --without-tests --enable-shared && \
-  make -j4 && \
-  make install && \
-  ldconfig /usr/local/lib && \
-  cd .. && rm -f Python-3.12.13.tgz && rm -rf Python-3.12.13 && \
-  ln -s /usr/local/bin/python3 /usr/local/bin/python && \
-  ln -s /usr/local/bin/pip3 /usr/local/bin/pip && \
-  apt-get clean && \
-  rm -rf /var/lib/apt/lists/* && \
-  python -m pip install --upgrade pip; \
-  pip install -r /tmp/requirements.txt;
+# install Java & updates
+RUN apt-get update && \
+    apt-get install -y openjdk-21-jdk && \
+    apt-get install -y ant && \
+    apt-get clean;
+
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-arm64
+
+RUN pip install -r /tmp/requirements.txt
 
 # Download connector libraries
-RUN wget -P /opt/flink/lib/ https://repo.maven.apache.org/maven2/org/apache/flink/flink-json/2.1.0/flink-json-2.1.0.jar; \
-    wget -P /opt/flink/lib/ https://repo.maven.apache.org/maven2/org/apache/flink/flink-connector-kafka/5.0.0-2.1/flink-connector-kafka-5.0.0-2.1.jar; \
-    wget -P /opt/flink/lib/ https://repo.maven.apache.org/maven2/org/apache/flink/flink-connector-postgres-cdc/3.3.0/flink-connector-postgres-cdc-3.3.0.jar; \
-    wget -P /opt/flink/lib/ https://repo.maven.apache.org/maven2/org/apache/flink/flink-sql-connector-postgres-cdc/3.3.0/flink-sql-connector-postgres-cdc-3.3.0.jar;
-
-
-RUN echo "taskmanager.memory.jvm-metaspace.size: 512m" >> /opt/flink/conf/flink-conf.yaml;
+RUN wget -P /opt/flink/lib/ https://repo1.maven.org/maven2/org/apache/flink/flink-connector-jdbc/3.1.2-1.18/flink-connector-jdbc-3.1.2-1.18.jar; \
+    wget -P /opt/flink/lib/ https://jdbc.postgresql.org/download/postgresql-42.7.3.jar; \
+    wget -P /opt/flink/lib/ https://repo.maven.apache.org/maven2/org/apache/flink/flink-sql-connector-kafka/3.1.0-1.18/flink-sql-connector-kafka-3.1.0-1.18.jar;
 
 WORKDIR /opt/flink
