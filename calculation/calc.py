@@ -14,7 +14,8 @@ import sys
 from logging.handlers import RotatingFileHandler
 
 from pyflink.common import Types
-from pyflink.datastream import StreamExecutionEnvironment
+from pyflink.datastream import StreamExecutionEnvironment, RuntimeExecutionMode
+from pyflink.datastream.connectors.jdbc import JdbcSink, JdbcConnectionOptions, JdbcExecutionOptions
 from pyflink.datastream.functions import MapFunction, SinkFunction
 from pyflink.datastream.connectors.kafka import KafkaSource
 from pyflink.datastream.connectors.kafka import KafkaOffsetsInitializer
@@ -76,6 +77,25 @@ def _load_table_definition(table_name: str) -> dict[str, str]:
             continue
         dtypes[column_name] = column_dtype
     return dtypes
+
+
+def _table_definition_to_types(table_definition: dict[str, str]) -> Types:
+    type_mapping = {
+        "int64": Types.INT(),
+        "float64": Types.FLOAT(),
+        "str": Types.STRING(),
+        "bool": Types.BOOLEAN(),
+        "datetime": Types.SQL_TIMESTAMP(),
+    }
+
+    field_types = []
+    for column_name, dtype in table_definition.items():
+        if dtype not in type_mapping:
+            LOGGER.critical(f"Unsupported data type '{dtype}' for column '{column_name}'")
+            raise ValueError(f"Unsupported data type '{dtype}' for column '{column_name}'")
+        field_types.append(type_mapping[dtype])
+
+    return Types.ROW_NAMED(list(table_definition.keys()), field_types)
 
 
 def set_consumer(server: str, port: int, topic: str):
@@ -443,7 +463,7 @@ def _quote_identifier(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
-def _get_insert_statement(table_name: str, data: dict[str, Any], key_columns: list[str]) -> tuple[sqlalchemy.TextClause, dict[str, Any]]:
+def _get_insert_statement(table_name: str, data: dict[str, Any], key_columns: list[str]) -> str:
     if not data:
         raise ValueError("Cannot build insert statement without data.")
 
@@ -479,75 +499,8 @@ def _get_insert_statement(table_name: str, data: dict[str, Any], key_columns: li
             f"ON CONFLICT ({conflict_columns}) DO NOTHING"
         )
 
-    return sqlalchemy.sql.text(statement_sql), bind_params
-
-
-# --------------------------------------------------------
-# PostgreSQL Sink
-# --------------------------------------------------------
-
-class GameStateSink(MapFunction):
-    conn: sqlalchemy.engine.base.Connection
-    log: logging.Logger
-
-    def open(self, runtime_context):
-        self.log = set_logger(os.getenv("LOGGER_JOB_NAME", "calculation_job"), log_path=os.getenv("LOGGER_JOB_PATH", "/opt/flink/usrlib/"))
-        self.log.info("Opening connection to PostgreSQL for GameStateSink")
-        self.conn = get_sql_engine().connect().execution_options(isolation_level="AUTOCOMMIT")
-
-    def map(self, value):
-
-        if value.get("game-state"):
-            insert, values = _get_insert_statement("game_state", value["game-state"], ["game"])
-            self.log.debug(f"Executing insert statement: {insert} with values: {values}")
-            self.conn.execute(insert, values)
-        return value
-
-    def close(self):
-        self.log.debug("Closing connection to PostgreSQL for GameStateSink")
-        self.conn.close()
-
-
-class InningStateSink(MapFunction):
-    conn: sqlalchemy.engine.base.Connection
-    log: logging.Logger
-
-    def open(self, runtime_context):
-        self.log = set_logger(os.getenv("LOGGER_JOB_NAME", "calculation_job"), log_path=os.getenv("LOGGER_JOB_PATH", "/opt/flink/usrlib/"))
-        self.log.info("Opening connection to PostgreSQL for JdbcSink")
-        self.conn = get_sql_engine().connect().execution_options(isolation_level="AUTOCOMMIT")
-
-    def map(self, value):
-        if value.get("inning-state"):
-            insert, values = _get_insert_statement("innings", value["inning-state"], ["game", "inning"])
-            self.log.debug(f"Executing insert statement: {insert} with values: {values}")
-            self.conn.execute(insert, values)
-        return value
-
-    def close(self):
-        self.log.debug("Closing connection to PostgreSQL for InningStateSink")
-        self.conn.close()
-
-
-class PitcherStateSink(MapFunction):
-    conn: sqlalchemy.engine.base.Connection
-    log: logging.Logger
-
-    def open(self, runtime_context):
-        self.log = set_logger(os.getenv("LOGGER_JOB_NAME", "calculation_job"), log_path=os.getenv("LOGGER_JOB_PATH", "/opt/flink/usrlib/"))
-        self.log.info("Opening connection to PostgreSQL for PitcherStateSink")
-        self.conn = get_sql_engine().connect().execution_options(isolation_level="AUTOCOMMIT")
-
-    def map(self, value):
-        if value.get("pitcher-state"):
-            insert, values = _get_insert_statement("pitchers", value["pitcher-state"], ["game", "pitcher"])
-            self.log.debug(f"Executing insert statement: {insert} with values: {values}")
-            self.conn.execute(insert, values)
-        return value
-
-    def close(self):
-        self.log.debug("Closing connection to PostgreSQL for PitcherStateSink")
-        self.conn.close()
+    return statement_sql
+    # return sqlalchemy.sql.text(statement_sql), bind_params
 
 
 # --------------------------------------------------------
@@ -558,7 +511,8 @@ class BusinessLogicMapper(MapFunction):
     log: logging.Logger
 
     def map(self, value):
-        self.log = set_logger(os.getenv("LOGGER_JOB_NAME", "calculation_job"), log_path=os.getenv("LOGGER_JOB_PATH", "/opt/flink/usrlib/"))
+        self.log = set_logger(os.getenv("LOGGER_JOB_NAME", "calculation_job"),
+                              log_path=os.getenv("LOGGER_JOB_PATH", "/opt/flink/usrlib/"))
         event = json.loads(value)
         self.log.info(f"Received message: {event}")
         game_calc = Calculation(get_sql_engine())
@@ -579,9 +533,11 @@ class BusinessLogicMapper(MapFunction):
 
 class EventTimestampAssigner(TimestampAssigner):
     log: logging.Logger
+
     def extract_timestamp(self, value, record_timestamp):
         event = json.loads(value)
-        self.log = set_logger(os.getenv("LOGGER_JOB_NAME", "calculation_job"), log_path=os.getenv("LOGGER_JOB_PATH", "/opt/flink/usrlib/"))
+        self.log = set_logger(os.getenv("LOGGER_JOB_NAME", "calculation_job"),
+                              log_path=os.getenv("LOGGER_JOB_PATH", "/opt/flink/usrlib/"))
         try:
             this_timestamp = int(event.get("event-timestamp", record_timestamp))
         except (ValueError, TypeError):
@@ -591,6 +547,25 @@ class EventTimestampAssigner(TimestampAssigner):
         return this_timestamp
 
 
+def configure_postgres_sink(sql_dml: str, type_info: Types, sql_url: str) -> JdbcSink:
+    # TODO: implement Sink as a map function myself, so everything can be logged!
+    return JdbcSink.sink(
+        sql_dml,
+        type_info,
+        JdbcConnectionOptions.JdbcConnectionOptionsBuilder()
+        .with_url(sql_url)
+        .with_driver_name("org.postgresql.Driver")
+        .with_user_name("postgres")
+        .with_password("mysecretpassword")
+        .build(),
+        JdbcExecutionOptions.builder()
+        .with_batch_interval_ms(1000)
+        .with_batch_size(200)
+        .with_max_retries(5)
+        .build(),
+    )
+
+
 # --------------------------------------------------------
 # Main
 # --------------------------------------------------------
@@ -598,7 +573,7 @@ class EventTimestampAssigner(TimestampAssigner):
 def main():
     env = StreamExecutionEnvironment.get_execution_environment()
     LOGGER.info("Setting up Flink Streaming Job for Game Events Calculation")
-
+    env.set_runtime_mode(RuntimeExecutionMode.STREAMING)
     env.set_parallelism(2)
     env.enable_checkpointing(30000)
 
@@ -629,21 +604,37 @@ def main():
     )
 
     processed_stream = stream.map(BusinessLogicMapper(), output_type=Types.PICKLED_BYTE_ARRAY())
+    # processed_stream.add_sink(postgres_sink)
 
     game_stream = processed_stream.filter(lambda x: x.get("game-state") is not None)
     inning_stream = processed_stream.filter(lambda x: x.get("inning-state") is not None)
     pitcher_stream = processed_stream.filter(lambda x: x.get("pitcher-state") is not None)
 
+    LOGGER.info("Creating postgres sinks")
+    game_def = _load_table_definition("game_state")
+    game_sink = configure_postgres_sink(_get_insert_statement("game_state", game_def, ["game"]),
+                                        _table_definition_to_types(game_def),
+                                        os.getenv("POSTGRES_DB_JDBC_URL", "jdbc:postgresql://postgres:5432/postgres"))
+    inning_def = _load_table_definition("innings")
+    inning_sink = configure_postgres_sink(_get_insert_statement("innings", inning_def, ["game", "inning"]),
+                                          _table_definition_to_types(inning_def),
+                                          os.getenv("POSTGRES_DB_JDBC_URL",
+                                                    "jdbc:postgresql://postgres:5432/postgres"))
+    pitcher_def = _load_table_definition("pitchers")
+    pitcher_sink = configure_postgres_sink(_get_insert_statement("pitchers", pitcher_def, ["game", "pitcher"]),
+                                           _table_definition_to_types(pitcher_def),
+                                           os.getenv("POSTGRES_DB_JDBC_URL",
+                                                     "jdbc:postgresql://postgres:5432/postgres"))
     LOGGER.info("Mapping processed stream to sinks")
-    game_stream.map(GameStateSink(), output_type=Types.PICKLED_BYTE_ARRAY())
-    inning_stream.map(InningStateSink(), output_type=Types.PICKLED_BYTE_ARRAY())
-    pitcher_stream.map(PitcherStateSink(), output_type=Types.PICKLED_BYTE_ARRAY())
+    game_stream.add_sink(game_sink)
+    inning_stream.add_sink(inning_sink)
+    pitcher_stream.add_sink(pitcher_sink)
 
     LOGGER.info('Showing alerts in the console')
-    processed_stream.print()
-    game_stream.print()
-    inning_stream.print()
-    pitcher_stream.print()
+    # processed_stream.print()
+    #game_stream.print()
+    #inning_stream.print()
+    #pitcher_stream.print()
 
     LOGGER.info("Executing Flink Streaming Job for Game Events Calculation")
     env.execute("game-events-calculation")

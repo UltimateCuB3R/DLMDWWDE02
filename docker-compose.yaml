@@ -25,6 +25,7 @@ services:
       - KAFKA_TOPIC=game-events
       - POSTGRES_DB_CONNECT_STRING=postgresql+psycopg://postgres:mysecretpassword@postgres:5432/postgres
       - POSTGRES_TABLE_DEFINITION=/opt/flink/usrlib/table_definition.xml
+      - POSTGRES_DB_JDBC_URL=jdbc:postgresql://postgres:5432/postgres
       - LOGGER_JOB_NAME=calculation_job
       - LOGGER_JOB_PATH=/opt/flink/usrlib/logs/
 
@@ -51,6 +52,7 @@ services:
       - KAFKA_TOPIC=game-events
       - POSTGRES_DB_CONNECT_STRING=postgresql+psycopg://postgres:mysecretpassword@postgres:5432/postgres
       - POSTGRES_TABLE_DEFINITION=/opt/flink/usrlib/table_definition.xml
+      - POSTGRES_DB_JDBC_URL=jdbc:postgresql://postgres:5432/postgres
       - LOGGER_JOB_NAME=calculation_job
       - LOGGER_JOB_PATH=/opt/flink/usrlib/
 
