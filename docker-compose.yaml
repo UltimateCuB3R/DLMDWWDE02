@@ -89,6 +89,7 @@ services:
     container_name: mlb-replay
     depends_on:
       - kafka
+      - postgres
     environment:
       - KAFKA_HOST=kafka
       - KAFKA_PORT=9092
@@ -98,6 +99,20 @@ services:
       - KAFKA_REPLAY_GAME_OFFSET=30
       - KAFKA_REPLAY_GAME_LIMIT=20
       - LOGGER_NAME=replay
+      - LOGGER_PATH=.
+      - LOGGER_LEVEL=DEBUG
+      - ENCODING=utf-8
+      - POSTGRES_DB_CONNECT_STRING=postgresql+psycopg://postgres:mysecretpassword@postgres:5432/postgres
+
+  ingest:
+    build:
+      context: ./ingestion
+      dockerfile: Dockerfile
+    container_name: mlb-ingest
+    depends_on:
+      - postgres
+    environment:
+      - LOGGER_NAME=ingest
       - LOGGER_PATH=.
       - LOGGER_LEVEL=DEBUG
       - ENCODING=utf-8
