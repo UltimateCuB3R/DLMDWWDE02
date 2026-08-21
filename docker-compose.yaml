@@ -82,16 +82,26 @@ services:
     volumes:
         - kafka_data:/var/lib/kafka/data
 
-  #kafka-ui:
-  #  image: provectuslabs/kafka-ui:latest
-  #  container_name: mlb-kafka-ui
-  #  ports:
-  #    - "8080:8080"
-  #  depends_on:
-  #    - kafka
-  #  environment:
-  #    KAFKA_CLUSTERS_0_NAME: mlb-kafka
-  #    KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+  replay:
+    build:
+      context: ./replay
+      dockerfile: Dockerfile
+    container_name: mlb-replay
+    depends_on:
+      - kafka
+    environment:
+      - KAFKA_HOST=kafka
+      - KAFKA_PORT=9092
+      - KAFKA_TOPIC=game-events
+      - KAFKA_REPLAY_OFFSET=30
+      - KAFKA_REPLAY_DELAY=0.5
+      - KAFKA_REPLAY_GAME_OFFSET=30
+      - KAFKA_REPLAY_GAME_LIMIT=20
+      - LOGGER_NAME=replay
+      - LOGGER_PATH=.
+      - LOGGER_LEVEL=DEBUG
+      - ENCODING=utf-8
+      - POSTGRES_DB_CONNECT_STRING=postgresql+psycopg://postgres:mysecretpassword@postgres:5432/postgres
 
   postgres:
     image: postgres:17

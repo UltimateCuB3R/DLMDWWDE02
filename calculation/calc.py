@@ -14,9 +14,8 @@ import sys
 from logging.handlers import RotatingFileHandler
 
 from pyflink.common import Types
-from pyflink.datastream import StreamExecutionEnvironment, RuntimeExecutionMode
-from pyflink.datastream.connectors.jdbc import JdbcSink, JdbcConnectionOptions, JdbcExecutionOptions
-from pyflink.datastream.functions import MapFunction, SinkFunction
+from pyflink.datastream import StreamExecutionEnvironment, RuntimeExecutionMode, RuntimeContext
+from pyflink.datastream.functions import MapFunction
 from pyflink.datastream.connectors.kafka import KafkaSource
 from pyflink.datastream.connectors.kafka import KafkaOffsetsInitializer
 from pyflink.common.serialization import SimpleStringSchema
@@ -45,7 +44,7 @@ def set_logger(log_name: str, log_level=logging.DEBUG, log_path: str = "./logs")
     if not os.path.exists(log_path):
         os.makedirs(log_path)
     log_file = os.path.join(log_path, f"{log_name}.log")
-    file_handler = RotatingFileHandler(log_file, maxBytes=1024 * 1024, backupCount=256, encoding=ENCODING)
+    file_handler = RotatingFileHandler(log_file, maxBytes=1024 * 1024 * 32, backupCount=256, encoding=ENCODING)
     file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
@@ -96,6 +95,48 @@ def _table_definition_to_types(table_definition: dict[str, str]) -> Types:
         field_types.append(type_mapping[dtype])
 
     return Types.ROW_NAMED(list(table_definition.keys()), field_types)
+
+
+def _build_create_table_statement(table_name: str,
+                                  table_definition: dict[str, str],
+                                  primary_key_columns: list[str]) -> sqlalchemy.TextClause:
+    sql_type_mapping = {
+        "int64": "BIGINT",
+        "float64": "DOUBLE PRECISION",
+        "str": "TEXT",
+        "bool": "BOOLEAN",
+        "datetime": "TIMESTAMP",
+    }
+
+    if not table_definition:
+        raise ValueError(f"Table definition for '{table_name}' is empty.")
+
+    missing_pk_columns = [column for column in primary_key_columns if column not in table_definition]
+    if missing_pk_columns:
+        raise ValueError(f"Primary key columns not found in definition for '{table_name}': {missing_pk_columns}")
+
+    column_definitions: list[str] = []
+    for column_name, dtype in table_definition.items():
+        if dtype not in sql_type_mapping:
+            raise ValueError(f"Unsupported data type '{dtype}' for column '{column_name}' in table '{table_name}'")
+        quoted_column = _quote_identifier(column_name)
+        column_definitions.append(f"{quoted_column} {sql_type_mapping[dtype]}")
+
+    primary_key_sql = ", ".join(_quote_identifier(column) for column in primary_key_columns)
+    create_sql = (
+        f"CREATE TABLE IF NOT EXISTS {_quote_identifier(table_name)} "
+        f"({', '.join(column_definitions)}, PRIMARY KEY ({primary_key_sql}))"
+    )
+    return sqlalchemy.sql.text(create_sql)
+
+
+def _get_delete_statement(table_name: str, game_id: str) -> tuple[sqlalchemy.TextClause, dict[str, Any]]:
+    if not game_id:
+        raise ValueError("Cannot build delete statement without game_id.")
+
+    statement_sql = f"DELETE FROM public.{_quote_identifier(table_name)} WHERE {_quote_identifier('game')} = :game_id"
+    return sqlalchemy.sql.text(statement_sql), {"game_id": game_id}
+
 
 
 def set_consumer(server: str, port: int, topic: str):
@@ -151,31 +192,28 @@ class Calculation:
         self.game_state = {key: None for key in self._def_game_state.keys()}
         self.log.debug(f'Game state after init: {self.game_state}')
         if not db_inspect.has_table("game_state"):
-            game_df = pd.DataFrame({c: pd.Series(dtype=t) for c, t in self._def_game_state.items()})
-            sql_result = game_df.to_sql('game_state', self.db_con, if_exists='replace', index=False)
-            with self.db_con.connect() as con:
-                con.execute(sqlalchemy.text('ALTER TABLE game_state ADD PRIMARY KEY (game);'))
-            self.log.debug(f'SQL result of game_state initialization: {sql_result}')
+            create_stmt = _build_create_table_statement("game_state", self._def_game_state, ["game"])
+            with self.db_con.begin() as con:
+                sql_result = con.execute(create_stmt)
+            self.log.debug(f'CREATE TABLE result for game_state: {sql_result}')
 
         self.inning_state = {key: None for key in self._def_innings.keys()}
         self.log.debug(f'Inning state after init: {self.inning_state}')
         if not db_inspect.has_table("innings"):
-            innings_df = pd.DataFrame({c: pd.Series(dtype=t) for c, t in self._def_innings.items()})
-            sql_result = innings_df.to_sql('innings', self.db_con, if_exists='replace', index=False)
-            with self.db_con.connect() as con:
-                con.execute(sqlalchemy.text('ALTER TABLE innings ADD PRIMARY KEY (game, inning);'))
-            self.log.debug(f'SQL result of innings initialization: {sql_result}')
+            create_stmt = _build_create_table_statement("innings", self._def_innings, ["game", "inning"])
+            with self.db_con.begin() as con:
+                sql_result = con.execute(create_stmt)
+            self.log.debug(f'CREATE TABLE result for innings: {sql_result}')
 
         self.pitcher_state = {key: None for key in self._def_pitchers.keys()}
         self.log.debug(f'Pitcher state after init: {self.pitcher_state}')
         if not db_inspect.has_table("pitchers"):
-            pitchers_df = pd.DataFrame({c: pd.Series(dtype=t) for c, t in self._def_pitchers.items()})
-            sql_result = pitchers_df.to_sql('pitchers', self.db_con, if_exists='replace', index=False)
-            with self.db_con.connect() as con:
-                con.execute(sqlalchemy.text('ALTER TABLE pitchers ADD PRIMARY KEY (game, pitcher);'))
-            self.log.debug(f'SQL result of pitchers initialization: {sql_result}')
+            create_stmt = _build_create_table_statement("pitchers", self._def_pitchers, ["game", "pitcher"])
+            with self.db_con.begin() as con:
+                sql_result = con.execute(create_stmt)
+            self.log.debug(f'CREATE TABLE result for pitchers: {sql_result}')
 
-        self.log.info('Tables initialized.')
+        self.log.info('All Tables initialized: game_state, innings, pitchers')
 
     def _read_game_state(self, game_id):
         game_df = pd.read_sql_query(f"SELECT * FROM public.game_state WHERE game = '{game_id}'", self.db_con)
@@ -246,6 +284,14 @@ class Calculation:
         result = pitcher_df.to_sql('pitchers', self.db_con, if_exists='replace', index=False)
         self.log.debug(f'result of to_sql (pitchers): {result}')
 
+    def _delete_game_data(self, game_id):
+        self.log.info(f"Deleting all data for game_id {game_id}")
+        for table in ["game_state", "innings", "pitchers"]:
+            delete_stmt, params = _get_delete_statement(table, game_id)
+            with self.db_con.connect() as con:
+                sql_result = con.execute(delete_stmt, params)
+            self.log.debug(f'DELETE result for {table} where game={game_id}: {sql_result}')
+
     def receive_event(self, event: dict[str, Any]):
         game_id = event["game-id"]
         # read game state and innings via sqlalchemy
@@ -282,11 +328,15 @@ class Calculation:
 
     def _process_game(self, event: dict[str, Any]):
         if event["event-type"] == "game-start":
-            self.log.info(f"Game started: {event['game-id']}")
+            self.log.info(f"Starting game: {event['game-id']}")
             # check if game is already running
-            if self.game_state["game"] == event["game-id"]:
-                self.log.critical(f"Game with ID {event['game-id']} already started!")
-                raise ValueError(f"Game with ID {event['game-id']} already started!")
+            if str(self.game_state["game"]) == str(event["game-id"]):
+                self.log.warning(f"Game with ID {event['game-id']} already started!")
+                if self.game_state["game-running"]:
+                    raise ValueError(f"Game with ID {event['game-id']} already started!")
+                else:
+                    self.log.warning(f"Game with ID {event['game-id']} was previously ended, restarting and cleaning up database...")
+                    self._delete_game_data(event["game-id"])
 
             # create new game entry with this game id
             # set all static values: game-id, away, home, stadium, date, location, umpires
@@ -463,7 +513,8 @@ def _quote_identifier(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
-def _get_insert_statement(table_name: str, data: dict[str, Any], key_columns: list[str]) -> str:
+def _get_insert_statement(table_name: str, data: dict[str, Any], key_columns: list[str]) -> tuple[
+    sqlalchemy.TextClause, dict[str, Any]]:
     if not data:
         raise ValueError("Cannot build insert statement without data.")
 
@@ -499,13 +550,54 @@ def _get_insert_statement(table_name: str, data: dict[str, Any], key_columns: li
             f"ON CONFLICT ({conflict_columns}) DO NOTHING"
         )
 
-    return statement_sql
-    # return sqlalchemy.sql.text(statement_sql), bind_params
+    # return statement_sql
+    return sqlalchemy.sql.text(statement_sql), bind_params
 
 
 # --------------------------------------------------------
-# Business Logic Wrapper
+# PyFlink
 # --------------------------------------------------------
+
+class PostgresSinkFunction(MapFunction):
+    def __init__(self):
+        self.log = None
+        self.conn = None
+
+    def open(self, runtime_context: RuntimeContext):
+        self.log = set_logger(os.getenv("LOGGER_JOB_NAME", "calculation_job"),
+                              log_path=os.getenv("LOGGER_JOB_PATH", "/opt/flink/usrlib/"))
+        self.log.info("Opening connection to PostgreSQL for Sink")
+        self.conn = get_sql_engine().connect().execution_options(isolation_level="AUTOCOMMIT")
+
+    def map(self, value):
+        state = json.loads(value)
+        game_state = state.get("game-state")
+        inning_state = state.get("inning-state")
+        pitcher_state = state.get("pitcher-state")
+        if not self.conn:
+            self.log.critical("PostgreSQL connection is not established.")
+            raise ConnectionError("PostgreSQL connection is not established.")
+        if game_state.get("game"):
+            insert, values = _get_insert_statement("game_state", game_state, ["game"])
+            self.log.debug(f"Executing insert statement: {insert} with values: {values}")
+            self.conn.execute(insert, values)
+        if inning_state.get("game") and inning_state.get("inning"):
+            insert, values = _get_insert_statement("innings", inning_state, ["game", "inning"])
+            self.log.debug(f"Executing insert statement: {insert} with values: {values}")
+            self.conn.execute(insert, values)
+        if pitcher_state.get("game") and pitcher_state.get("pitcher"):
+            insert, values = _get_insert_statement("pitchers", pitcher_state, ["game", "pitcher"])
+            self.log.debug(f"Executing insert statement: {insert} with values: {values}")
+            self.conn.execute(insert, values)
+        return value
+
+    def close(self):
+        if self.log:
+            self.log.info("Closing connection to PostgreSQL for Sink")
+        if self.conn:
+            self.conn.close()
+            self.conn = None
+
 
 class BusinessLogicMapper(MapFunction):
     log: logging.Logger
@@ -528,7 +620,7 @@ class BusinessLogicMapper(MapFunction):
                 "pitcher-state": None
             }
 
-        return result
+        return json.dumps(result)
 
 
 class EventTimestampAssigner(TimestampAssigner):
@@ -547,25 +639,6 @@ class EventTimestampAssigner(TimestampAssigner):
         return this_timestamp
 
 
-def configure_postgres_sink(sql_dml: str, type_info: Types, sql_url: str) -> JdbcSink:
-    # TODO: implement Sink as a map function myself, so everything can be logged!
-    return JdbcSink.sink(
-        sql_dml,
-        type_info,
-        JdbcConnectionOptions.JdbcConnectionOptionsBuilder()
-        .with_url(sql_url)
-        .with_driver_name("org.postgresql.Driver")
-        .with_user_name("postgres")
-        .with_password("mysecretpassword")
-        .build(),
-        JdbcExecutionOptions.builder()
-        .with_batch_interval_ms(1000)
-        .with_batch_size(200)
-        .with_max_retries(5)
-        .build(),
-    )
-
-
 # --------------------------------------------------------
 # Main
 # --------------------------------------------------------
@@ -578,11 +651,11 @@ def main():
     env.enable_checkpointing(30000)
 
     LOGGER.info(
-        f"Connecting to Kafka at {os.getenv('KAFKA_HOST', 'localhost')}:{os.getenv('KAFKA_PORT', '9092')} and subscribing to topic '{os.getenv('KAFKA_TOPIC', 'game-events')}'")
+        f"Connecting to Kafka at {os.getenv('KAFKA_HOST', 'kafka')}:{os.getenv('KAFKA_PORT', '9092')} and subscribing to topic '{os.getenv('KAFKA_TOPIC', 'game-events')}'")
     kafka_source = KafkaSource.builder()
     LOGGER.debug("Kafka source builder initialized")
     kafka_source = kafka_source.set_bootstrap_servers(
-        ":".join([os.getenv('KAFKA_HOST', 'localhost'), os.getenv('KAFKA_PORT', '9092')]))
+        ":".join([os.getenv('KAFKA_HOST', 'kafka'), os.getenv('KAFKA_PORT', '9092')]))
     LOGGER.debug("Kafka source bootstrap servers set")
     kafka_source = kafka_source.set_topics(os.getenv('KAFKA_TOPIC', 'game-events'))
     LOGGER.debug("Kafka source topics set")
@@ -603,38 +676,41 @@ def main():
         source_name=os.getenv('KAFKA_TOPIC', 'game-events')
     )
 
-    processed_stream = stream.map(BusinessLogicMapper(), output_type=Types.PICKLED_BYTE_ARRAY())
-    # processed_stream.add_sink(postgres_sink)
+    LOGGER.info("Mapping stream to business logic and Postgres sink")
+    processed_stream = stream.map(BusinessLogicMapper(),
+                                  output_type=Types.PICKLED_BYTE_ARRAY()
+                                  ).map(PostgresSinkFunction(),
+                                        output_type=Types.PICKLED_BYTE_ARRAY())
 
-    game_stream = processed_stream.filter(lambda x: x.get("game-state") is not None)
-    inning_stream = processed_stream.filter(lambda x: x.get("inning-state") is not None)
-    pitcher_stream = processed_stream.filter(lambda x: x.get("pitcher-state") is not None)
+    # game_stream = processed_stream.filter(lambda x: x.get("game-state") is not None)
+    # inning_stream = processed_stream.filter(lambda x: x.get("inning-state") is not None)
+    # pitcher_stream = processed_stream.filter(lambda x: x.get("pitcher-state") is not None)
 
-    LOGGER.info("Creating postgres sinks")
-    game_def = _load_table_definition("game_state")
-    game_sink = configure_postgres_sink(_get_insert_statement("game_state", game_def, ["game"]),
-                                        _table_definition_to_types(game_def),
-                                        os.getenv("POSTGRES_DB_JDBC_URL", "jdbc:postgresql://postgres:5432/postgres"))
-    inning_def = _load_table_definition("innings")
-    inning_sink = configure_postgres_sink(_get_insert_statement("innings", inning_def, ["game", "inning"]),
-                                          _table_definition_to_types(inning_def),
-                                          os.getenv("POSTGRES_DB_JDBC_URL",
-                                                    "jdbc:postgresql://postgres:5432/postgres"))
-    pitcher_def = _load_table_definition("pitchers")
-    pitcher_sink = configure_postgres_sink(_get_insert_statement("pitchers", pitcher_def, ["game", "pitcher"]),
-                                           _table_definition_to_types(pitcher_def),
-                                           os.getenv("POSTGRES_DB_JDBC_URL",
-                                                     "jdbc:postgresql://postgres:5432/postgres"))
-    LOGGER.info("Mapping processed stream to sinks")
-    game_stream.add_sink(game_sink)
-    inning_stream.add_sink(inning_sink)
-    pitcher_stream.add_sink(pitcher_sink)
+    # LOGGER.info("Creating postgres sinks")
+    # game_def = _load_table_definition("game_state")
+    # game_sink = configure_postgres_sink(_get_insert_statement("game_state", game_def, ["game"]),
+    #                                    _table_definition_to_types(game_def),
+    #                                    os.getenv("POSTGRES_DB_JDBC_URL", "jdbc:postgresql://postgres:5432/postgres"))
+    # inning_def = _load_table_definition("innings")
+    # inning_sink = configure_postgres_sink(_get_insert_statement("innings", inning_def, ["game", "inning"]),
+    #                                      _table_definition_to_types(inning_def),
+    #                                      os.getenv("POSTGRES_DB_JDBC_URL",
+    #                                                "jdbc:postgresql://postgres:5432/postgres"))
+    # pitcher_def = _load_table_definition("pitchers")
+    # pitcher_sink = configure_postgres_sink(_get_insert_statement("pitchers", pitcher_def, ["game", "pitcher"]),
+    #                                       _table_definition_to_types(pitcher_def),
+    #                                       os.getenv("POSTGRES_DB_JDBC_URL",
+    #                                                 "jdbc:postgresql://postgres:5432/postgres"))
+    # LOGGER.info("Mapping processed stream to sinks")
+    # game_stream.add_sink(game_sink)
+    # inning_stream.add_sink(inning_sink)
+    # pitcher_stream.add_sink(pitcher_sink)
 
     LOGGER.info('Showing alerts in the console')
-    # processed_stream.print()
-    #game_stream.print()
-    #inning_stream.print()
-    #pitcher_stream.print()
+    processed_stream.print()
+    # game_stream.print()
+    # inning_stream.print()
+    # pitcher_stream.print()
 
     LOGGER.info("Executing Flink Streaming Job for Game Events Calculation")
     env.execute("game-events-calculation")

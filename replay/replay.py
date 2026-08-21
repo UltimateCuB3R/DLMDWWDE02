@@ -1,6 +1,4 @@
-import sqlalchemy
-import pandas as pd
-from kafka import KafkaProducer
+import threading
 import json
 from dotenv import load_dotenv
 import os
@@ -9,9 +7,14 @@ import logging
 import sys
 from logging.handlers import RotatingFileHandler
 
+import sqlalchemy
+import pandas as pd
+from kafka import KafkaProducer
+
 load_dotenv()
 
 ENCODING = os.getenv("ENCODING", "utf-8")
+
 
 class StreamFilter(logging.Filter):
     def filter(self, record):
@@ -29,7 +32,7 @@ def set_logger(log_name: str, log_level: str = "INFO", log_path: str = "./logs")
     if not os.path.exists(log_path):
         os.makedirs(log_path)
     log_file = os.path.join(log_path, f"{log_name}.log")
-    file_handler = RotatingFileHandler(log_file, maxBytes=1024 * 1024, backupCount=256, encoding=ENCODING)
+    file_handler = RotatingFileHandler(log_file, maxBytes=1024 * 1024 * 32, backupCount=256, encoding=ENCODING)
     file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
@@ -41,7 +44,7 @@ def set_logger(log_name: str, log_level: str = "INFO", log_path: str = "./logs")
     return logger
 
 
-LOGGER = set_logger(os.getenv("LOGGER_NAME", "replay"), os.getenv("LOGGER_LEVEL", "INFO"),
+LOGGER = set_logger(os.getenv("LOGGER_NAME", "replay"), os.getenv("LOGGER_LEVEL", "DEBUG"),
                     os.getenv("LOGGER_PATH", "./logs"))
 
 
@@ -53,6 +56,9 @@ def set_producer(server='localhost', port=9092):
 
 def replay_kafka():
     replay_delay = float(os.getenv('KAFKA_REPLAY_DELAY', '0.5'))  # delay in seconds between events
+    game_replay_offset = float(os.getenv('KAFKA_REPLAY_GAME_OFFSET', '30'))  # delay in seconds between game replays
+    replay_offset = float(os.getenv('KAFKA_REPLAY_OFFSET', '30'))
+
     LOGGER.info(f'Starting replay to Kafka with delay of {replay_delay} seconds between events.')
 
     producer = set_producer(server=os.getenv('KAFKA_HOST', 'localhost'),
@@ -65,30 +71,50 @@ def replay_kafka():
     else:
         LOGGER.critical("No database connection string provided in environment variables.")
         raise Exception("No database connection string provided in environment variables.")
-    games, events, pitches = _get_tables(sql_engine)
+    game_ids = _get_game_ids(sql_engine, limit=int(os.getenv('KAFKA_REPLAY_GAME_LIMIT', '10')))
 
-    # TODO: Start multiple replays after each other, but with different game-ids, so that we can simulate multiple games at the same time
+    time.sleep(replay_offset)  # initial delay before starting the replay
+
+    for game_id in game_ids:
+        games, events, pitches = _get_tables_for_game(sql_engine, game_id)
+        # create a thread for each game replay with a delay between game starts derived from env KAFKA_REPLAY_GAME_OFFSET
+        replay_thread = threading.Thread(target=_start_replay_thread,
+                                         args=(games, events, pitches, producer, replay_delay))
+        replay_thread.start()
+        time.sleep(game_replay_offset)
+
+
+def _start_replay_thread(games, events, pitches, producer, replay_delay):
     for event in replay(games, events, pitches):
+        LOGGER.debug(f'Preparing to send event: {event}')
         future = producer.send(topic=os.getenv('KAFKA_TOPIC', 'game-events'), key=event["game-id"], value=event)
         result = future.get(timeout=10)  # wait for response, so it's synchronous processing
         LOGGER.info(f'Message sent for event: {event}')
         time.sleep(replay_delay)
 
 
-def _get_tables(sql_in):
-    games_df = pd.read_sql_query('SELECT * FROM public.games LIMIT 2', sql_in)  # TODO: remove LIMIT 2 in production
-    # read the events that fit the game ids
+def _get_game_ids(sql_in, limit=10):
+    games_df = pd.read_sql_query(f'SELECT "Game" FROM public.games LIMIT {limit}', sql_in)
     game_ids = games_df["Game"].tolist()
-    events_df = pd.read_sql_query(f'SELECT * FROM public.events WHERE "Game" IN ({",".join(map(str, game_ids))})',
-                                  sql_in)
-    pitches_df = pd.read_sql_query(
-        f'SELECT * FROM public.pitches WHERE "Game" IN ({",".join(map(str, game_ids))})', sql_in)
-    LOGGER.info(f'Loaded tables from database: games ({len(games_df)} rows), events ({len(events_df)} rows), pitches ({len(pitches_df)} rows)')
+    LOGGER.info(f'Loaded {len(game_ids)} game ids from database.')
+    return game_ids
+
+
+def _get_tables_for_game(sql_in, game_id):
+    games_df = pd.read_sql_query(f'SELECT * FROM public.games WHERE "Game" = {game_id} LIMIT 1', sql_in)
+    # read the events that fit the game id
+    game_id = games_df["Game"][0]
+    events_df = pd.read_sql_query(f'SELECT * FROM public.events WHERE "Game" = {game_id}', sql_in)
+    pitches_df = pd.read_sql_query(f'SELECT * FROM public.pitches WHERE "Game" = {game_id}', sql_in)
+    LOGGER.info(
+        f'Loaded tables from database: games ({len(games_df)} rows), events ({len(events_df)} rows), pitches ({len(pitches_df)} rows)')
 
     return games_df, events_df, pitches_df
 
+
 def _generate_timestamp():
     return int(time.time() * 1000)  # milliseconds since epoch
+
 
 def replay(table_games: pd.DataFrame, table_events: pd.DataFrame, table_pitches: pd.DataFrame):
     # table_games
@@ -213,3 +239,7 @@ def replay(table_games: pd.DataFrame, table_events: pd.DataFrame, table_pitches:
             "duration": game.get("Duration"),
         }
         yield current_event
+
+
+if __name__ == "__main__":
+    replay_kafka()

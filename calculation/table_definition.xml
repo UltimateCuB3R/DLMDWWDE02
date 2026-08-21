@@ -6,6 +6,7 @@
         <column name="home" dtype="str"/>
         <column name="stadium" dtype="str"/>
         <column name="date" dtype="str"/>
+        <column name="duration" dtype="str"/>
         <column name="location" dtype="str"/>
         <column name="umpires" dtype="str"/>
         <column name="inning" dtype="str"/>
