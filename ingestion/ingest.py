@@ -1,11 +1,12 @@
 from pathlib import Path
 import os
 from dotenv import load_dotenv
-import pandas as pd
-import sqlalchemy
 import logging
 import sys
 from logging.handlers import RotatingFileHandler
+
+import pandas as pd
+import sqlalchemy
 
 load_dotenv()
 

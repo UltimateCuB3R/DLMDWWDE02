@@ -1,14 +1,13 @@
-FROM python:3.14-slim
+FROM python:3.11
 
-WORKDIR /app
+RUN pip install --upgrade pip
 
-RUN pip install --no-cache-dir pandas "psycopg[binary]>=3.3.4" fastapi "uvicorn[standard]"
+WORKDIR /app/src
 
-COPY ingestion/ ingestion/
+COPY requirements.txt ./requirements.txt
+COPY ingest.py ./ingest.py
+RUN pip install -r ./requirements.txt
 
-EXPOSE 8000
+RUN chmod 777 /app/src/
 
-ENV CSV_SERVICE_HOST=0.0.0.0
-ENV CSV_SERVICE_PORT=8000
-
-CMD ["python", "-m", "ingestion.service"]
+CMD ["python", "ingest.py"]
