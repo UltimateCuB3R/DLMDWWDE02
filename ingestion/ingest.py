@@ -10,7 +10,6 @@ import sqlalchemy
 
 load_dotenv()
 
-DB_DEFINITION = Path('./calculation/table_definition.xml')
 # load encoding from env
 ENCODING = os.getenv("ENCODING", "utf-8")
 
@@ -43,7 +42,7 @@ def set_logger(log_name: str, log_level: str = "INFO", log_path: str = "./logs")
     return logger
 
 
-LOGGER = set_logger(os.getenv("LOGGER_NAME", "replay"), os.getenv("LOGGER_LEVEL", "INFO"),
+LOGGER = set_logger(os.getenv("LOGGER_NAME", "ingest"), os.getenv("LOGGER_LEVEL", "DEBUG"),
                     os.getenv("LOGGER_PATH", "./logs"))
 
 
@@ -81,9 +80,6 @@ def _load_csv_into_table(file_path: Path, encoding: str = "utf-8") -> pd.DataFra
     if not file_path.exists():
         LOGGER.critical("CSV file does not exist.")
         raise FileNotFoundError(f"CSV file does not exist: {file_path}")
-    if not DB_DEFINITION.exists():
-        LOGGER.critical("Database definition file does not exist.")
-        raise FileNotFoundError(f"Database definition file does not exist: {DB_DEFINITION}")
 
     LOGGER.info(f'Loading CSV file: {file_path}')
     df = pd.read_csv(
@@ -96,5 +92,6 @@ def _load_csv_into_table(file_path: Path, encoding: str = "utf-8") -> pd.DataFra
 
 
 if __name__ == '__main__':
-    result = start_ingestion('../raw_data/')
-    print(result)
+    ingestion_path = os.getenv("INGESTION_PATH", "../raw_data/")
+    result = start_ingestion(ingestion_path)
+    LOGGER.info(f'Ingestion results: {result}')
