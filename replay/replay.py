@@ -100,10 +100,9 @@ def _get_game_ids(sql_in, limit=10):
     return game_ids
 
 
-def _get_tables_for_game(sql_in, game_id):
+def _get_tables_for_game(sql_in, game_id: str):
     games_df = pd.read_sql_query(f'SELECT * FROM public.games WHERE "Game" = {game_id} LIMIT 1', sql_in)
     # read the events that fit the game id
-    game_id = games_df["Game"][0]
     events_df = pd.read_sql_query(f'SELECT * FROM public.events WHERE "Game" = {game_id}', sql_in)
     pitches_df = pd.read_sql_query(f'SELECT * FROM public.pitches WHERE "Game" = {game_id}', sql_in)
     LOGGER.info(
@@ -175,7 +174,6 @@ def replay(table_games: pd.DataFrame, table_events: pd.DataFrame, table_pitches:
                     "batting-team": event.get("Batting Team"),
                     "pitching-team": event.get("Pitching Team"),
                     "inning": this_inning,
-                    # "event-text": event.get("events")
                 }
                 yield current_event
                 current_inning = this_inning
@@ -183,6 +181,10 @@ def replay(table_games: pd.DataFrame, table_events: pd.DataFrame, table_pitches:
             # all pitches of the event
             event_pitches = game_pitches[game_pitches["Event Id"] == event_id]
             for _, pitch in event_pitches.iterrows():
+                try:
+                    pitch_speed = int(pitch.get("MPH",""))
+                except (ValueError, TypeError):
+                    pitch_speed = 0
                 current_event = {
                     "event-type": "pitch",
                     "event-timestamp": _generate_timestamp(),
@@ -192,7 +194,7 @@ def replay(table_games: pd.DataFrame, table_events: pd.DataFrame, table_pitches:
                     "pitch-id": pitch.get("Num"),
                     "pitch": pitch.get("Pitch"),
                     "pitch-type": pitch.get("Type"),
-                    "pitch-speed": pitch.get("MPH"),
+                    "pitch-speed": pitch_speed,
                     "pitch-location": pitch.get("play-hitzone"),
                     "play-bases": pitch.get("play-bases"),
                     "pitching-team": event.get("Pitching Team")
