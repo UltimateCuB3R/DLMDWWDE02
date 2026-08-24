@@ -44,7 +44,7 @@ def set_logger(log_name: str, log_level=logging.DEBUG, log_path: str = "./logs")
     if not os.path.exists(log_path):
         os.makedirs(log_path)
     log_file = os.path.join(log_path, f"{log_name}.log")
-    file_handler = RotatingFileHandler(log_file, maxBytes=1024 * 1024 * 32, backupCount=256, encoding=ENCODING)
+    file_handler = RotatingFileHandler(log_file, maxBytes=1024 * 1024 * 8, backupCount=256, encoding=ENCODING)
     file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
@@ -96,6 +96,60 @@ def _table_definition_to_types(table_definition: dict[str, str]) -> Types:
 
     return Types.ROW_NAMED(list(table_definition.keys()), field_types)
 
+def get_sql_engine() -> sqlalchemy.engine.base.Engine:
+    sql_string = os.getenv("POSTGRES_DB_CONNECT_STRING")
+    if sql_string:
+        sql_engine = sqlalchemy.create_engine(sql_string)
+        LOGGER.debug(f"Database connection string: {sql_string}")
+    else:
+        LOGGER.critical("No database connection string provided in environment variables.")
+        raise Exception("No database connection string provided in environment variables.")
+    return sql_engine
+
+
+def _quote_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _get_insert_statement(table_name: str, data: dict[str, Any], key_columns: list[str]) -> tuple[
+    sqlalchemy.TextClause, dict[str, Any]]:
+    if not data:
+        raise ValueError("Cannot build insert statement without data.")
+
+    data_columns = list(data.keys())
+    missing_key_columns = [column for column in key_columns if column not in data_columns]
+    if missing_key_columns:
+        raise ValueError(f"Missing key columns in data payload: {missing_key_columns}")
+
+    placeholders: list[str] = []
+    bind_params: dict[str, Any] = {}
+    for index, column in enumerate(data_columns):
+        bind_name = f"v{index}"
+        placeholders.append(f":{bind_name}")
+        bind_params[bind_name] = data[column]
+
+    quoted_table = _quote_identifier(table_name)
+    quoted_columns = ', '.join(_quote_identifier(column) for column in data_columns)
+    conflict_columns = ', '.join(_quote_identifier(column) for column in key_columns)
+    update_columns = [column for column in data_columns if column not in key_columns]
+
+    if update_columns:
+        update_clause = ', '.join(
+            f"{_quote_identifier(column)} = EXCLUDED.{_quote_identifier(column)}"
+            for column in update_columns
+        )
+        statement_sql = (
+            f"INSERT INTO {quoted_table} ({quoted_columns}) VALUES ({', '.join(placeholders)}) "
+            f"ON CONFLICT ({conflict_columns}) DO UPDATE SET {update_clause}"
+        )
+    else:
+        statement_sql = (
+            f"INSERT INTO {quoted_table} ({quoted_columns}) VALUES ({', '.join(placeholders)}) "
+            f"ON CONFLICT ({conflict_columns}) DO NOTHING"
+        )
+
+    # return statement_sql
+    return sqlalchemy.sql.text(statement_sql), bind_params
 
 def _build_create_table_statement(table_name: str,
                                   table_definition: dict[str, str],
@@ -134,7 +188,7 @@ def _get_delete_statement(table_name: str, game_id: str) -> tuple[sqlalchemy.Tex
     if not game_id:
         raise ValueError("Cannot build delete statement without game_id.")
 
-    statement_sql = f"DELETE FROM public.{_quote_identifier(table_name)} WHERE {_quote_identifier('game')} = :game_id"
+    statement_sql = f"DELETE FROM public.{_quote_identifier(table_name)} WHERE {_quote_identifier('game')} = CAST(:game_id AS TEXT)"
     return sqlalchemy.sql.text(statement_sql), {"game_id": game_id}
 
 
@@ -215,7 +269,7 @@ class Calculation:
 
         self.log.info('All Tables initialized: game_state, innings, pitchers')
 
-    def _read_game_state(self, game_id):
+    def _read_game_state(self, game_id: str):
         game_df = pd.read_sql_query(f"SELECT * FROM public.game_state WHERE game = '{game_id}'", self.db_con)
         # determine length of dataframe, if 1 then read first row as dict, if 0 then create new row with default values, if >1 then raise error
         if len(game_df) == 1:
@@ -229,7 +283,7 @@ class Calculation:
             self.log.critical(f"Unexpected number of rows in game_state for game_id {game_id}: {len(game_df)}")
             raise ValueError("Unexpected number of rows in game_state")
 
-    def _read_game_innings(self, game_id, inning):
+    def _read_game_innings(self, game_id: str, inning: str):
         inning_df = pd.read_sql_query(
             f"SELECT * FROM public.innings WHERE game = '{game_id}' AND inning = '{inning}'",
             self.db_con)
@@ -245,7 +299,7 @@ class Calculation:
                 f"Unexpected number of rows in innings for game_id {game_id}, inning {inning}: {len(inning_df)}")
             raise ValueError("Unexpected number of rows in innings")
 
-    def _read_game_pitchers(self, game_id, pitcher):
+    def _read_game_pitchers(self, game_id: str, pitcher: str):
         pitcher_df = pd.read_sql_query(
             f"SELECT * FROM public.pitchers WHERE game = '{game_id}' AND pitcher = '{pitcher}'", self.db_con)
         if len(pitcher_df) == 1:
@@ -284,7 +338,7 @@ class Calculation:
         result = pitcher_df.to_sql('pitchers', self.db_con, if_exists='replace', index=False)
         self.log.debug(f'result of to_sql (pitchers): {result}')
 
-    def _delete_game_data(self, game_id):
+    def _delete_game_data(self, game_id: str):
         self.log.info(f"Deleting all data for game_id {game_id}")
         for table in ["game_state", "innings", "pitchers"]:
             delete_stmt, params = _get_delete_statement(table, game_id)
@@ -293,7 +347,7 @@ class Calculation:
             self.log.debug(f'DELETE result for {table} where game={game_id}: {sql_result}')
 
     def receive_event(self, event: dict[str, Any]):
-        game_id = event["game-id"]
+        game_id = str(event["game-id"])
         # read game state and innings via sqlalchemy
         self._read_game_state(game_id)
 
@@ -327,16 +381,17 @@ class Calculation:
         return result_state
 
     def _process_game(self, event: dict[str, Any]):
+        game_id = str(event["game-id"])
         if event["event-type"] == "game-start":
-            self.log.info(f"Starting game: {event['game-id']}")
+            self.log.info(f"Starting game: {game_id}")
             # check if game is already running
-            if str(self.game_state["game"]) == str(event["game-id"]):
-                self.log.warning(f"Game with ID {event['game-id']} already started!")
+            if str(self.game_state["game"]) == game_id:
+                self.log.warning(f"Game with ID {game_id} already started!")
                 if self.game_state["game-running"]:
-                    raise ValueError(f"Game with ID {event['game-id']} already started!")
+                    raise ValueError(f"Game with ID {game_id} already started!")
                 else:
-                    self.log.warning(f"Game with ID {event['game-id']} was previously ended, restarting and cleaning up database...")
-                    self._delete_game_data(event["game-id"])
+                    self.log.warning(f"Game with ID {game_id} was previously ended, restarting and cleaning up database...")
+                    self._delete_game_data(game_id)
 
             # create new game entry with this game id
             # set all static values: game-id, away, home, stadium, date, location, umpires
@@ -347,7 +402,7 @@ class Calculation:
                     self.game_state[key] = event[key]
                 else:
                     if key == "game":
-                        self.game_state[key] = event["game-id"]
+                        self.game_state[key] = game_id
                     elif key == "away-score" or key == "home-score" or key == "out":
                         self.game_state[key] = 0
                     elif key == "game-running":
@@ -359,13 +414,13 @@ class Calculation:
                     self.game_state[key] = " ".join(event[key].split()) if event[key] else ""
 
         elif event["event-type"] == "game-end":
-            self.log.info(f"Game ended: {event['game-id']}")
+            self.log.info(f"Game ended: {game_id}")
             # check if calculated scores match final game scores
             final_away_score = self._to_int(event["away-score"])
             final_home_score = self._to_int(event["home-score"])
             if self.game_state["away-score"] != final_away_score or self.game_state["home-score"] != final_home_score:
                 self.log.warning(
-                    f"Calculated scores ({self.game_state['away-score']}, {self.game_state['home-score']}) do not match final scores ({final_away_score}, {final_home_score}) for game {event['game-id']}")
+                    f"Calculated scores ({self.game_state['away-score']}, {self.game_state['home-score']}) do not match final scores ({final_away_score}, {final_home_score}) for game {game_id}")
 
             # set the dynamic values: away-score, home-score, duration
             # set game_running to FALSE
@@ -379,8 +434,9 @@ class Calculation:
             raise ValueError("Invalid event-type")
 
     def _process_inning(self, event: dict[str, Any]):
+        game_id = str(event["game-id"])
         if event["event-type"] == "inning-start":
-            self.log.info(f"Inning started: {event['inning']} in game {event['game-id']}")
+            self.log.info(f"Inning started: {event['inning']} in game {game_id}")
             # create a new half-inning entry for this game id
             # static: game-id, batting-team, pitching-team, inning
             # initialize the dynamic values: away-score, home-score
@@ -389,7 +445,7 @@ class Calculation:
                     self.inning_state[key] = event[key]
                 else:
                     if key == "game":
-                        self.inning_state[key] = event["game-id"]
+                        self.inning_state[key] = game_id
                     elif key == "away-score" or key == "home-score":
                         self.inning_state[key] = 0
                     elif key == "inning-running":
@@ -399,7 +455,7 @@ class Calculation:
             self.game_state["inning"] = event["inning"]
 
         elif event["event-type"] == "inning-end":
-            self.log.info(f"Inning ended: {event['inning']} in game {event['game-id']}")
+            self.log.info(f"Inning ended: {event['inning']} in game {game_id}")
             # set the dynamic values: away-score, home-score
             self.inning_state["away-score"] = self._to_int(event["away-score"])
             self.inning_state["home-score"] = self._to_int(event["home-score"])
@@ -416,8 +472,9 @@ class Calculation:
             raise ValueError("Invalid event-type")
 
     def _process_pitch(self, event: dict[str, Any]):
+        game_id = str(event["game-id"])
         if event["event-type"] == "pitch":
-            self.log.info(f"Pitch: {event['pitch-id']} for event {event['event-id']} of game {event['game-id']}")
+            self.log.info(f"Pitch: {event['pitch-id']} for event {event['event-id']} of game {game_id}")
             # create new pitch entry for game id and event id
             # values: pitcher, pitch-id, pitch, pitch-type, pitch-speed, pitch-location, pitching-team
             # calculation needed: pitch -> call (strike/ball)
@@ -470,8 +527,9 @@ class Calculation:
             raise ValueError("Invalid event-type")
 
     def _process_event(self, event: dict[str, Any]):
+        game_id = str(event["game-id"])
         if event["event-type"] == "event":
-            self.log.info(f"Event: {event['event-id']} in inning {event['inning']} of game {event['game-id']}")
+            self.log.info(f"Event: {event['event-id']} in inning {event['inning']} of game {game_id}")
             # create new event entry for game id and event id
             # values: batting-team, pitching-team, inning, event-text, away-score, home-score
             # calculation needed: event-text -> number of outs; runner on bases?
@@ -498,60 +556,7 @@ class Calculation:
             return 0
 
 
-def get_sql_engine() -> sqlalchemy.engine.base.Engine:
-    sql_string = os.getenv("POSTGRES_DB_CONNECT_STRING")
-    if sql_string:
-        sql_engine = sqlalchemy.create_engine(sql_string)
-        LOGGER.debug(f"Database connection string: {sql_string}")
-    else:
-        LOGGER.critical("No database connection string provided in environment variables.")
-        raise Exception("No database connection string provided in environment variables.")
-    return sql_engine
 
-
-def _quote_identifier(identifier: str) -> str:
-    return '"' + identifier.replace('"', '""') + '"'
-
-
-def _get_insert_statement(table_name: str, data: dict[str, Any], key_columns: list[str]) -> tuple[
-    sqlalchemy.TextClause, dict[str, Any]]:
-    if not data:
-        raise ValueError("Cannot build insert statement without data.")
-
-    data_columns = list(data.keys())
-    missing_key_columns = [column for column in key_columns if column not in data_columns]
-    if missing_key_columns:
-        raise ValueError(f"Missing key columns in data payload: {missing_key_columns}")
-
-    placeholders: list[str] = []
-    bind_params: dict[str, Any] = {}
-    for index, column in enumerate(data_columns):
-        bind_name = f"v{index}"
-        placeholders.append(f":{bind_name}")
-        bind_params[bind_name] = data[column]
-
-    quoted_table = _quote_identifier(table_name)
-    quoted_columns = ', '.join(_quote_identifier(column) for column in data_columns)
-    conflict_columns = ', '.join(_quote_identifier(column) for column in key_columns)
-    update_columns = [column for column in data_columns if column not in key_columns]
-
-    if update_columns:
-        update_clause = ', '.join(
-            f"{_quote_identifier(column)} = EXCLUDED.{_quote_identifier(column)}"
-            for column in update_columns
-        )
-        statement_sql = (
-            f"INSERT INTO {quoted_table} ({quoted_columns}) VALUES ({', '.join(placeholders)}) "
-            f"ON CONFLICT ({conflict_columns}) DO UPDATE SET {update_clause}"
-        )
-    else:
-        statement_sql = (
-            f"INSERT INTO {quoted_table} ({quoted_columns}) VALUES ({', '.join(placeholders)}) "
-            f"ON CONFLICT ({conflict_columns}) DO NOTHING"
-        )
-
-    # return statement_sql
-    return sqlalchemy.sql.text(statement_sql), bind_params
 
 
 # --------------------------------------------------------
