@@ -7,6 +7,8 @@ from logging.handlers import RotatingFileHandler
 
 import pandas as pd
 import sqlalchemy
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 
 load_dotenv()
 
@@ -16,7 +18,7 @@ ENCODING = os.getenv("ENCODING", "utf-8")
 
 class StreamFilter(logging.Filter):
     def filter(self, record):
-        if record.levelno in [logging.INFO, logging.WARNING, logging.ERROR, logging.CRITICAL]:
+        if record.levelno in [logging.INFO, logging.WARNING, logging.ERROR, logging.DEBUG, logging.CRITICAL]:
             return True
         else:
             return False
@@ -30,7 +32,7 @@ def set_logger(log_name: str, log_level: str = "INFO", log_path: str = "./logs")
     if not os.path.exists(log_path):
         os.makedirs(log_path)
     log_file = os.path.join(log_path, f"{log_name}.log")
-    file_handler = RotatingFileHandler(log_file, maxBytes=1024 * 1024, backupCount=256, encoding=ENCODING)
+    file_handler = RotatingFileHandler(log_file, maxBytes=1024 * 1024 * 8, backupCount=256, encoding=ENCODING)
     file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
@@ -43,7 +45,7 @@ def set_logger(log_name: str, log_level: str = "INFO", log_path: str = "./logs")
 
 
 LOGGER = set_logger(os.getenv("LOGGER_NAME", "ingest"), os.getenv("LOGGER_LEVEL", "DEBUG"),
-                    os.getenv("LOGGER_PATH", "./logs"))
+                    os.getenv("LOGGER_PATH", "../logs"))
 
 
 def start_ingestion(file_path: str) -> dict:
@@ -63,12 +65,24 @@ def start_ingestion(file_path: str) -> dict:
         raise Exception("No database connection string provided in environment variables.")
 
     LOGGER.info('Saving tables to database.')
-    games_table.to_sql('games', sql_engine, if_exists='replace', index=False)
-    LOGGER.info(f'Successfully saved table to database: games with {len(games_table)} records.')
-    events_table.to_sql('events', sql_engine, if_exists='replace', index=False)
-    LOGGER.info(f'Successfully saved table to database: events with {len(events_table)} records.')
-    pitches_table.to_sql('pitches', sql_engine, if_exists='replace', index=False)
-    LOGGER.info(f'Successfully saved table to database: pitches with {len(pitches_table)} records.')
+    try:
+        games_table.to_sql('games', sql_engine, if_exists='replace', index=False)
+    except Exception as e:
+        LOGGER.error(f'Failed to save table to database: games. Error: {e}')
+    else:
+        LOGGER.info(f'Successfully saved table to database: games with {len(games_table)} records.')
+    try:
+        events_table.to_sql('events', sql_engine, if_exists='replace', index=False)
+    except Exception as e:
+        LOGGER.error(f'Failed to save table to database: events. Error: {e}')
+    else:
+        LOGGER.info(f'Successfully saved table to database: events with {len(events_table)} records.')
+    try:
+        pitches_table.to_sql('pitches', sql_engine, if_exists='replace', index=False)
+    except Exception as e:
+        LOGGER.error(f'Failed to save table to database: pitches. Error: {e}')
+    else:
+        LOGGER.info(f'Successfully saved table to database: pitches with {len(pitches_table)} records.')
     return {
         "games": len(games_table),
         "events": len(events_table),
@@ -91,7 +105,52 @@ def _load_csv_into_table(file_path: Path, encoding: str = "utf-8") -> pd.DataFra
     return df
 
 
-if __name__ == '__main__':
-    ingestion_path = os.getenv("INGESTION_PATH", "../raw_data/")
-    result = start_ingestion(ingestion_path)
-    LOGGER.info(f'Ingestion results: {result}')
+# CURRENT_DIR = Path(__file__).resolve().parent
+# PROJECT_ROOT = CURRENT_DIR.parent
+
+# if str(PROJECT_ROOT) not in sys.path:
+#    sys.path.insert(0, str(PROJECT_ROOT))
+
+
+class IngestionRequest(BaseModel):
+    file_path: str | None = Field(
+        default="/app/data/",
+        description="Directory containing games.csv, events.csv, and pitches.csv",
+    )
+
+
+class IngestionResponse(BaseModel):
+    file_path: str
+    games: int
+    events: int
+    pitches: int
+
+
+app = FastAPI(title="Ingestion API", version="1.0.0")
+
+
+@app.get("/health")
+def health_check() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.post("/start", response_model=IngestionResponse)
+def start_ingestion_endpoint(request: IngestionRequest) -> IngestionResponse:
+    ingestion_path = request.file_path or os.getenv("INGESTION_PATH", "../raw_data/")
+    try:
+        result = start_ingestion(ingestion_path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return IngestionResponse(file_path=ingestion_path, **result)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=False)
+
+# if __name__ == '__main__':
+# ingestion_path = os.getenv("INGESTION_PATH", "../raw_data/")
+# result = start_ingestion(ingestion_path)
+# LOGGER.info(f'Ingestion results: {result}')

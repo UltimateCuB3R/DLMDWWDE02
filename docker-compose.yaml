@@ -109,12 +109,15 @@ services:
       context: ./ingestion
       dockerfile: Dockerfile
     container_name: mlb-ingest
+    ports:
+      - "8000:8000"
     depends_on:
       - postgres
     environment:
       - LOGGER_NAME=ingest
       - LOGGER_PATH=.
       - LOGGER_LEVEL=DEBUG
+      - INGESTION_PATH=/app/data/
       - ENCODING=utf-8
       - POSTGRES_DB_CONNECT_STRING=postgresql+psycopg://postgres:mysecretpassword@postgres:5432/postgres
 
