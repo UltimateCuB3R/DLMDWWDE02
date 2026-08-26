@@ -4,6 +4,12 @@ services:
     container_name: mlb-grafana
     ports:
       - "3000:3000"
+    volumes:
+        - grafana_data:/var/lib/grafana
+        - ./grafana/dashboards:/var/lib/grafana/dashboards
+        - ./grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - postgres
 
 
   mlb-jobmanager:
@@ -87,6 +93,8 @@ services:
       context: ./replay
       dockerfile: Dockerfile
     container_name: mlb-replay
+    ports:
+      - "8001:8001"
     depends_on:
       - kafka
       - postgres
@@ -118,6 +126,7 @@ services:
       - LOGGER_PATH=.
       - LOGGER_LEVEL=DEBUG
       - INGESTION_PATH=/app/data/
+      - CHUNK_SIZE=100000
       - ENCODING=utf-8
       - POSTGRES_DB_CONNECT_STRING=postgresql+psycopg://postgres:mysecretpassword@postgres:5432/postgres
 
@@ -141,3 +150,4 @@ services:
 volumes:
     postgres_data:
     kafka_data:
+    grafana_data:
