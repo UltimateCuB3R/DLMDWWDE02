@@ -10,6 +10,8 @@ from logging.handlers import RotatingFileHandler
 import sqlalchemy
 import pandas as pd
 from kafka import KafkaProducer
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
 load_dotenv()
 
@@ -48,13 +50,92 @@ LOGGER = set_logger(os.getenv("LOGGER_NAME", "replay"), os.getenv("LOGGER_LEVEL"
                     os.getenv("LOGGER_PATH", "./logs"))
 
 
+class ReplayControlResponse(BaseModel):
+    status: str
+    detail: str
+
+
+class ReplayController:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._thread = None
+        self._pause_event = threading.Event()
+        self._stop_requested = False
+        self._state = "idle"
+        self._error = None
+        self._pause_event.set()
+
+    def start(self):
+        with self._lock:
+            if self._thread is None or not self._thread.is_alive():
+                self._stop_requested = False
+                self._error = None
+                self._pause_event.set()
+                self._thread = threading.Thread(target=self._run_worker, daemon=True)
+                self._thread.start()
+                self._state = "running"
+                return self._state, "Replay started."
+            if self._state == "paused":
+                self._pause_event.set()
+                self._state = "running"
+                return self._state, "Replay resumed."
+            if self._state == "running":
+                return self._state, "Replay is already running."
+            raise RuntimeError(f"Replay cannot be started from state '{self._state}'.")
+
+    def pause(self):
+        with self._lock:
+            if self._thread is None or not self._thread.is_alive():
+                raise ValueError("Replay is not running.")
+            if self._state == "paused":
+                return self._state, "Replay is already paused."
+            self._pause_event.clear()
+            self._state = "paused"
+            return self._state, "Replay paused."
+
+    def get_status(self):
+        with self._lock:
+            if self._error:
+                return "error", self._error
+            return self._state, "ok"
+
+    def _wait_if_paused(self):
+        while not self._stop_requested:
+            self._pause_event.wait()
+            if self._pause_event.is_set():
+                return
+
+    def _sleep_interruptible(self, delay_seconds: float):
+        end_time = time.time() + max(delay_seconds, 0.0)
+        while time.time() < end_time and not self._stop_requested:
+            self._wait_if_paused()
+            remaining = end_time - time.time()
+            time.sleep(min(0.1, max(remaining, 0.0)))
+
+    def _run_worker(self):
+        try:
+            replay_kafka(self)
+        except Exception as exc:
+            LOGGER.exception("Replay worker crashed: %s", exc)
+            with self._lock:
+                self._error = str(exc)
+                self._state = "error"
+        else:
+            with self._lock:
+                self._state = "idle"
+                self._thread = None
+
+
+REPLAY_CONTROLLER = ReplayController()
+
+
 def set_producer(server='localhost', port=9092):
     return KafkaProducer(bootstrap_servers=f'{server}:{port}',
                          key_serializer=lambda k: str(k).encode('utf-8'),
                          value_serializer=lambda v: json.dumps(v).encode('utf-8'))
 
 
-def replay_kafka():
+def replay_kafka(controller: ReplayController | None = None):
     replay_delay = float(os.getenv('KAFKA_REPLAY_DELAY', '0.5'))  # delay in seconds between events
     game_replay_offset = float(os.getenv('KAFKA_REPLAY_GAME_OFFSET', '30'))  # delay in seconds between game replays
     replay_offset = float(os.getenv('KAFKA_REPLAY_OFFSET', '30'))
@@ -73,24 +154,37 @@ def replay_kafka():
         raise Exception("No database connection string provided in environment variables.")
     game_ids = _get_game_ids(sql_engine, limit=int(os.getenv('KAFKA_REPLAY_GAME_LIMIT', '10')))
 
-    time.sleep(replay_offset)  # initial delay before starting the replay
+    if controller:
+        controller._sleep_interruptible(replay_offset)
+    else:
+        time.sleep(replay_offset)  # initial delay before starting the replay
 
     for game_id in game_ids:
         games, events, pitches = _get_tables_for_game(sql_engine, game_id)
-        # create a thread for each game replay with a delay between game starts derived from env KAFKA_REPLAY_GAME_OFFSET
-        replay_thread = threading.Thread(target=_start_replay_thread,
-                                         args=(games, events, pitches, producer, replay_delay))
-        replay_thread.start()
-        time.sleep(game_replay_offset)
+        if controller:
+            controller._wait_if_paused()
+            _start_replay_thread(games, events, pitches, producer, replay_delay, controller)
+            controller._sleep_interruptible(game_replay_offset)
+        else:
+            # create a thread for each game replay with a delay between game starts derived from env KAFKA_REPLAY_GAME_OFFSET
+            replay_thread = threading.Thread(target=_start_replay_thread,
+                                             args=(games, events, pitches, producer, replay_delay))
+            replay_thread.start()
+            time.sleep(game_replay_offset)
 
 
-def _start_replay_thread(games, events, pitches, producer, replay_delay):
+def _start_replay_thread(games, events, pitches, producer, replay_delay, controller: ReplayController | None = None):
     for event in replay(games, events, pitches):
+        if controller:
+            controller._wait_if_paused()
         LOGGER.debug(f'Preparing to send event: {event}')
         future = producer.send(topic=os.getenv('KAFKA_TOPIC', 'game-events'), key=event["game-id"], value=event)
-        result = future.get(timeout=10)  # wait for response, so it's synchronous processing
+        future.get(timeout=10)  # wait for response, so it's synchronous processing
         LOGGER.info(f'Message sent for event: {event}')
-        time.sleep(replay_delay)
+        if controller:
+            controller._sleep_interruptible(replay_delay)
+        else:
+            time.sleep(replay_delay)
 
 
 def _get_game_ids(sql_in, limit=10):
@@ -243,5 +337,32 @@ def replay(table_games: pd.DataFrame, table_events: pd.DataFrame, table_pitches:
         yield current_event
 
 
+app = FastAPI(title="Replay API", version="1.0.0")
+
+
+@app.get("/health")
+def health_check() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.post("/start", response_model=ReplayControlResponse)
+def start_replay_endpoint() -> ReplayControlResponse:
+    status, detail = REPLAY_CONTROLLER.start()
+    if status == "running":
+        return ReplayControlResponse(status=status, detail=detail)
+    raise HTTPException(status_code=409, detail=detail)
+
+
+@app.post("/stop", response_model=ReplayControlResponse)
+def stop_replay_endpoint() -> ReplayControlResponse:
+    try:
+        status, detail = REPLAY_CONTROLLER.pause()
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return ReplayControlResponse(status=status, detail=detail)
+
+
 if __name__ == "__main__":
-    replay_kafka()
+    import uvicorn
+
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=False)

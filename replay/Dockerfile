@@ -10,4 +10,6 @@ RUN pip install -r ./requirements.txt
 
 RUN chmod 777 /app/src/
 
-CMD ["python", "replay.py"]
+EXPOSE 8001
+
+CMD ["uvicorn", "replay:app", "--host", "0.0.0.0", "--port", "8001"]
