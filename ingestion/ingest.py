@@ -14,6 +14,11 @@ load_dotenv()
 
 # load encoding from env
 ENCODING = os.getenv("ENCODING", "utf-8")
+FILES = {
+    "games": "games.csv",
+    "events": "events.csv",
+    "pitches": "pitches.csv"
+}
 
 
 class StreamFilter(logging.Filter):
@@ -49,44 +54,47 @@ LOGGER = set_logger(os.getenv("LOGGER_NAME", "ingest"), os.getenv("LOGGER_LEVEL"
 
 
 def start_ingestion(file_path: str) -> dict:
-    # load the csv files into Tables
-    LOGGER.info(f'Loading CSV files from path: {file_path}')
-    games_table = _load_csv_into_table(Path(file_path, "games.csv"), ENCODING)
-    events_table = _load_csv_into_table(Path(file_path, "events.csv"), ENCODING)
-    pitches_table = _load_csv_into_table(Path(file_path, "pitches.csv"), ENCODING)
-
-    # save the tables to the database
+    # create a database connection
     sql_string = os.getenv("POSTGRES_DB_CONNECT_STRING")
     if sql_string:
         sql_engine = sqlalchemy.create_engine(sql_string)
         LOGGER.info(f'Connected to database with connection string: {sql_string}')
     else:
         LOGGER.critical("No database connection string provided in environment variables.")
-        raise Exception("No database connection string provided in environment variables.")
+        raise ValueError("No database connection string provided in environment variables.")
 
-    LOGGER.info('Saving tables to database.')
-    try:
-        games_table.to_sql('games', sql_engine, if_exists='replace', index=False)
-    except Exception as e:
-        LOGGER.error(f'Failed to save table to database: games. Error: {e}')
-    else:
-        LOGGER.info(f'Successfully saved table to database: games with {len(games_table)} records.')
-    try:
-        events_table.to_sql('events', sql_engine, if_exists='replace', index=False)
-    except Exception as e:
-        LOGGER.error(f'Failed to save table to database: events. Error: {e}')
-    else:
-        LOGGER.info(f'Successfully saved table to database: events with {len(events_table)} records.')
-    try:
-        pitches_table.to_sql('pitches', sql_engine, if_exists='replace', index=False)
-    except Exception as e:
-        LOGGER.error(f'Failed to save table to database: pitches. Error: {e}')
-    else:
-        LOGGER.info(f'Successfully saved table to database: pitches with {len(pitches_table)} records.')
+    chunk_size = int(os.getenv("CHUNK_SIZE", 100000))
+    LOGGER.info(f'Chunk size for database insertion: {chunk_size}')
+
+    table_lines = {}
+    for table in FILES.keys():
+        table_lines[table] = 0
+
+    # load the csv files into Tables
+    LOGGER.info(f'Loading CSV files from path: {file_path}')
+    for table, file_name in FILES.items():
+        first = True
+        file_path_full = Path(file_path, file_name)
+        LOGGER.info(f'Loading CSV file: {file_path_full} into table: {table}')
+        for chunk in _load_csv_into_table_chunked(file_path_full, encoding=ENCODING, chunk_size=chunk_size):
+            try:
+                if first:
+                    LOGGER.info(f'Inserting first chunk of size {len(chunk)} into table: {table}')
+                    chunk.to_sql(table, sql_engine, if_exists='replace', index=False)
+                    first = False
+                else:
+                    LOGGER.info(f'Appending chunk of size {len(chunk)} into table: {table}')
+                    chunk.to_sql(table, sql_engine, if_exists='append', index=False)
+            except Exception as e:
+                LOGGER.error(f'Failed to save chunk to database: {table}. Error: {e}')
+            else:
+                LOGGER.info(f'Successfully saved chunk to database: {table} with {len(chunk)} records.')
+                table_lines[table] += len(chunk)
+
     return {
-        "games": len(games_table),
-        "events": len(events_table),
-        "pitches": len(pitches_table)
+        "games": table_lines["games"],
+        "events": table_lines["events"],
+        "pitches": table_lines["pitches"]
     }
 
 
@@ -105,11 +113,20 @@ def _load_csv_into_table(file_path: Path, encoding: str = "utf-8") -> pd.DataFra
     return df
 
 
-# CURRENT_DIR = Path(__file__).resolve().parent
-# PROJECT_ROOT = CURRENT_DIR.parent
+def _load_csv_into_table_chunked(file_path: Path, encoding: str = "utf-8", chunk_size: int = 100000):
+    if not file_path.exists():
+        LOGGER.critical("CSV file does not exist.")
+        raise FileNotFoundError(f"CSV file does not exist: {file_path}")
 
-# if str(PROJECT_ROOT) not in sys.path:
-#    sys.path.insert(0, str(PROJECT_ROOT))
+    LOGGER.info(f'Loading CSV file in chunks: {file_path}')
+    for chunk in pd.read_csv(
+            file_path,
+            encoding=encoding,
+            na_values=["--"],
+            keep_default_na=True,
+            chunksize=chunk_size):
+        LOGGER.info(f'Loaded chunk of size {len(chunk)} from CSV file: {file_path}')
+        yield chunk
 
 
 class IngestionRequest(BaseModel):
@@ -141,6 +158,8 @@ def start_ingestion_endpoint(request: IngestionRequest) -> IngestionResponse:
         result = start_ingestion(ingestion_path)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return IngestionResponse(file_path=ingestion_path, **result)
 
@@ -149,8 +168,3 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=False)
-
-# if __name__ == '__main__':
-# ingestion_path = os.getenv("INGESTION_PATH", "../raw_data/")
-# result = start_ingestion(ingestion_path)
-# LOGGER.info(f'Ingestion results: {result}')

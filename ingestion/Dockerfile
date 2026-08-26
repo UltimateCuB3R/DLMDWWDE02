@@ -16,4 +16,4 @@ RUN chmod 777 /app/data/
 
 EXPOSE 8000
 
-CMD ["uvicorn", "ingestion.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "ingest:app", "--host", "0.0.0.0", "--port", "8000"]
