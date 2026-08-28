@@ -11,7 +11,7 @@ IU Internationale Hochschule
 2. Docker Desktop starten
 3. Im Projektverzeichnis das Terminal öffnen und folgenden Befehl ausführen:
    ```bash
-   docker-compose up
+   docker compose -f docker-compose.yaml -p dlmdwwde02 up -d
    ```
    Warten bis die Container gestartet sind und die Logs anzeigen, dass die Services laufen.
 4. Für Start des Ingestion Service folgenden Befehl ausführen:
