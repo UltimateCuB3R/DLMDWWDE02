@@ -42,4 +42,4 @@ IU Internationale Hochschule
 
 # Hinweise
 ## Bekannte Probleme
-- PyFlink Job lässt Docker Container nach einer gewissen Zeit einfrieren. 
+- Aktuell Keine.
