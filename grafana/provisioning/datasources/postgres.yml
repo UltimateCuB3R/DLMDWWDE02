@@ -6,10 +6,10 @@ datasources:
     access: proxy
     url: postgres:5432
 
-    user: postgres
+    user: grafana
 
     secureJsonData:
-      password: mysecretpassword
+      password: grafana
 
     jsonData:
       database: postgres

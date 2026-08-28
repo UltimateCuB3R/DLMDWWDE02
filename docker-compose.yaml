@@ -131,10 +131,14 @@ services:
       - POSTGRES_DB_CONNECT_STRING=postgresql+psycopg://postgres:mysecretpassword@postgres:5432/postgres
 
   postgres:
-    image: postgres:17
+    build:
+      context: ./postgres
+      dockerfile: Dockerfile
     container_name: mlb-postgres
     environment:
-      POSTGRES_PASSWORD: mysecretpassword
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=mysecretpassword
     ports:
       - "5432:5432"
     volumes:
