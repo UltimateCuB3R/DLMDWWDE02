@@ -138,7 +138,7 @@ def set_producer(server='localhost', port=9092):
 def replay_kafka(controller: ReplayController | None = None):
     replay_delay = float(os.getenv('KAFKA_REPLAY_DELAY', '0.5'))  # delay in seconds between events
     game_replay_offset = float(os.getenv('KAFKA_REPLAY_GAME_OFFSET', '30'))  # delay in seconds between game replays
-    replay_offset = float(os.getenv('KAFKA_REPLAY_OFFSET', '30'))
+    # replay_offset = float(os.getenv('KAFKA_REPLAY_OFFSET', '30'))
 
     LOGGER.info(f'Starting replay to Kafka with delay of {replay_delay} seconds between events.')
 
@@ -152,12 +152,12 @@ def replay_kafka(controller: ReplayController | None = None):
     else:
         LOGGER.critical("No database connection string provided in environment variables.")
         raise Exception("No database connection string provided in environment variables.")
-    game_ids = _get_game_ids(sql_engine, limit=int(os.getenv('KAFKA_REPLAY_GAME_LIMIT', '10')))
+    game_ids = _get_game_ids(sql_engine, limit=int(os.getenv('KAFKA_REPLAY_GAME_LIMIT', '5')))
 
-    if controller:
-        controller._sleep_interruptible(replay_offset)
-    else:
-        time.sleep(replay_offset)  # initial delay before starting the replay
+    # if controller:
+    #     controller._sleep_interruptible(replay_offset)
+    # else:
+    #     time.sleep(replay_offset)  # initial delay before starting the replay
 
     for game_id in game_ids:
         games, events, pitches = _get_tables_for_game(sql_engine, game_id)
