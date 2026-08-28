@@ -607,7 +607,7 @@ class PostgresSinkFunction(MapFunction):
             self.conn.execute(insert, values)
             self.log.info(
                 f"Inserted/Updated pitchers for game: {pitcher_state.get('game')}, pitcher: {pitcher_state.get('pitcher')}")
-        return value
+        return None
 
     def close(self):
         if self.log:
