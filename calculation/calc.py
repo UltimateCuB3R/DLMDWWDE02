@@ -36,7 +36,7 @@ class StreamFilter(logging.Filter):
             return False
 
 
-def set_logger(log_name: str, log_level=logging.DEBUG, log_path: str = "./logs"):
+def set_logger(log_name: str, log_level=logging.INFO, log_path: str = "./logs"):
     logger = logging.getLogger(log_name)
     if logger.hasHandlers():
         logger.handlers.clear()
@@ -96,6 +96,7 @@ def _table_definition_to_types(table_definition: dict[str, str]) -> Types:
 
     return Types.ROW_NAMED(list(table_definition.keys()), field_types)
 
+
 def get_sql_engine() -> sqlalchemy.engine.base.Engine:
     sql_string = os.getenv("POSTGRES_DB_CONNECT_STRING")
     if sql_string:
@@ -151,6 +152,7 @@ def _get_insert_statement(table_name: str, data: dict[str, Any], key_columns: li
     # return statement_sql
     return sqlalchemy.sql.text(statement_sql), bind_params
 
+
 def _build_create_table_statement(table_name: str,
                                   table_definition: dict[str, str],
                                   primary_key_columns: list[str]) -> sqlalchemy.TextClause:
@@ -192,7 +194,6 @@ def _get_delete_statement(table_name: str, game_id: str) -> tuple[sqlalchemy.Tex
     return sqlalchemy.sql.text(statement_sql), {"game_id": game_id}
 
 
-
 def set_consumer(server: str, port: int, topic: str):
     return KafkaConsumer(topic,
                          bootstrap_servers=f'{server}:{port}',
@@ -201,6 +202,7 @@ def set_consumer(server: str, port: int, topic: str):
 
 
 def start_calculation():
+    # Only for Testing!
     sql_string = os.getenv("POSTGRES_DB_CONNECT_STRING")
     if sql_string:
         sql_engine = sqlalchemy.create_engine(sql_string)
@@ -390,7 +392,8 @@ class Calculation:
                 if self.game_state["game-running"]:
                     raise ValueError(f"Game with ID {game_id} already started!")
                 else:
-                    self.log.warning(f"Game with ID {game_id} was previously ended, restarting and cleaning up database...")
+                    self.log.warning(
+                        f"Game with ID {game_id} was previously ended, restarting and cleaning up database...")
                     self._delete_game_data(game_id)
 
             # create new game entry with this game id
@@ -556,9 +559,6 @@ class Calculation:
             return 0
 
 
-
-
-
 # --------------------------------------------------------
 # PyFlink
 # --------------------------------------------------------
@@ -569,10 +569,17 @@ class PostgresSinkFunction(MapFunction):
         self.conn = None
 
     def open(self, runtime_context: RuntimeContext):
-        self.log = set_logger(os.getenv("LOGGER_JOB_NAME", "calculation_job"),
-                              log_path=os.getenv("LOGGER_JOB_PATH", "/opt/flink/usrlib/"))
-        self.log.info("Opening connection to PostgreSQL for Sink")
-        self.conn = get_sql_engine().connect().execution_options(isolation_level="AUTOCOMMIT")
+        if self.log:
+            self.log.info("Logger for PostgresSinkFunction already initialized")
+        else:
+            self.log = set_logger(os.getenv("LOGGER_JOB_NAME", "calculation_job"),
+                                  log_path=os.getenv("LOGGER_JOB_PATH", "/opt/flink/usrlib/"))
+            self.log.info("Initialized logger for PostgresSinkFunction")
+        if self.conn:
+            self.log.info("PostgreSQL connection for PostgresSinkFunction already established")
+        else:
+            self.log.info("Connection to PostgreSQL for Sink established")
+            self.conn = get_sql_engine().connect().execution_options(isolation_level="AUTOCOMMIT")
 
     def map(self, value):
         state = json.loads(value)
@@ -582,18 +589,24 @@ class PostgresSinkFunction(MapFunction):
         if not self.conn:
             self.log.critical("PostgreSQL connection is not established.")
             raise ConnectionError("PostgreSQL connection is not established.")
+        self.log.info("Saving state to PostgreSQL")
         if game_state.get("game"):
             insert, values = _get_insert_statement("game_state", game_state, ["game"])
             self.log.debug(f"Executing insert statement: {insert} with values: {values}")
             self.conn.execute(insert, values)
+            self.log.info(f"Inserted/Updated game_state for game: {game_state.get('game')}")
         if inning_state.get("game") and inning_state.get("inning"):
             insert, values = _get_insert_statement("innings", inning_state, ["game", "inning"])
             self.log.debug(f"Executing insert statement: {insert} with values: {values}")
             self.conn.execute(insert, values)
+            self.log.info(
+                f"Inserted/Updated innings for game: {inning_state.get('game')}, inning: {inning_state.get('inning')}")
         if pitcher_state.get("game") and pitcher_state.get("pitcher"):
             insert, values = _get_insert_statement("pitchers", pitcher_state, ["game", "pitcher"])
             self.log.debug(f"Executing insert statement: {insert} with values: {values}")
             self.conn.execute(insert, values)
+            self.log.info(
+                f"Inserted/Updated pitchers for game: {pitcher_state.get('game')}, pitcher: {pitcher_state.get('pitcher')}")
         return value
 
     def close(self):
@@ -605,17 +618,29 @@ class PostgresSinkFunction(MapFunction):
 
 
 class BusinessLogicMapper(MapFunction):
-    log: logging.Logger
+    def __init__(self):
+        self.log = None
+        self.game_calc = None
+
+    def open(self, runtime_context: RuntimeContext):
+        if self.log:
+            self.log.info("Logger for BusinessLogicMapper already initialized")
+        else:
+            self.log = set_logger(os.getenv("LOGGER_JOB_NAME", "calculation_job"),
+                                  log_path=os.getenv("LOGGER_JOB_PATH", "/opt/flink/usrlib/"))
+            self.log.info("Initialized logger for BusinessLogicMapper")
+        if self.game_calc:
+            self.log.info("Calculation object for BusinessLogicMapper already initialized")
+        else:
+            self.game_calc = Calculation(get_sql_engine())
+            self.log.info("Initialized Calculation object for BusinessLogicMapper")
+        self.log.info("BusinessLogicMapper opened successfully")
 
     def map(self, value):
-        self.log = set_logger(os.getenv("LOGGER_JOB_NAME", "calculation_job"),
-                              log_path=os.getenv("LOGGER_JOB_PATH", "/opt/flink/usrlib/"))
         event = json.loads(value)
         self.log.info(f"Received message: {event}")
-        game_calc = Calculation(get_sql_engine())
-        self.log.info("Initialized Calculation object")
         try:
-            result = game_calc.receive_event(event)
+            result = self.game_calc.receive_event(event)
             self.log.debug(f"Received total state: {result}")
         except pandas.errors.DatabaseError as e:
             self.log.critical(f"DatabaseError processing event: {e}")
@@ -627,14 +652,24 @@ class BusinessLogicMapper(MapFunction):
 
         return json.dumps(result)
 
+    def close(self):
+        if self.log:
+            self.log.info("Closing BusinessLogicMapper")
+        if self.game_calc:
+            self.game_calc = None
+
 
 class EventTimestampAssigner(TimestampAssigner):
     log: logging.Logger
 
     def extract_timestamp(self, value, record_timestamp):
         event = json.loads(value)
-        self.log = set_logger(os.getenv("LOGGER_JOB_NAME", "calculation_job"),
-                              log_path=os.getenv("LOGGER_JOB_PATH", "/opt/flink/usrlib/"))
+        if self.log:
+            self.log.debug("Using existing logger for timestamp extraction")
+        else:
+            self.log = set_logger(os.getenv("LOGGER_JOB_NAME", "calculation_job"),
+                                  log_path=os.getenv("LOGGER_JOB_PATH", "/opt/flink/usrlib/"))
+            self.log.debug("Creating new logger for timestamp extraction")
         try:
             this_timestamp = int(event.get("event-timestamp", record_timestamp))
         except (ValueError, TypeError):
@@ -652,7 +687,7 @@ def main():
     env = StreamExecutionEnvironment.get_execution_environment()
     LOGGER.info("Setting up Flink Streaming Job for Game Events Calculation")
     env.set_runtime_mode(RuntimeExecutionMode.STREAMING)
-    env.set_parallelism(2)
+    env.set_parallelism(1)
     env.enable_checkpointing(30000)
 
     LOGGER.info(
