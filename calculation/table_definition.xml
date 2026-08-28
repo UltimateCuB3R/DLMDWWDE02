@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<TABLES>
+    <TABLE name="game_state">
+        <column name="game" dtype="str"/>
+        <column name="away" dtype="str"/>
+        <column name="home" dtype="str"/>
+        <column name="stadium" dtype="str"/>
+        <column name="date" dtype="str"/>
+        <column name="duration" dtype="str"/>
+        <column name="location" dtype="str"/>
+        <column name="umpires" dtype="str"/>
+        <column name="inning" dtype="str"/>
+        <column name="out" dtype="int64"/>
+        <column name="count" dtype="str"/>
+        <column name="runner-1" dtype="str"/>
+        <column name="runner-2" dtype="str"/>
+        <column name="runner-3" dtype="str"/>
+        <column name="away-score" dtype="int64"/>
+        <column name="home-score" dtype="int64"/>
+        <column name="pitcher" dtype="str"/>
+        <column name="pitch_y" dtype="float64"/>
+        <column name="pitch_x" dtype="float64"/>
+        <column name="pitch-type" dtype="str"/>
+        <column name="pitch-speed" dtype="int64"/>
+        <column name="game-running" dtype="bool"/>
+    </TABLE>
+    <TABLE name="innings">
+        <column name="game" dtype="str"/>
+        <column name="inning" dtype="str"/>
+        <column name="batting-team" dtype="str"/>
+        <column name="pitching-team" dtype="str"/>
+        <column name="away-score" dtype="int64"/>
+        <column name="home-score" dtype="int64"/>
+        <column name="inning-running" dtype="bool"/>
+    </TABLE>
+    <TABLE name="pitchers">
+        <column name="game" dtype="str"/>
+        <column name="pitcher" dtype="str"/>
+        <column name="team" dtype="str"/>
+        <column name="pitches" dtype="int64"/>
+    </TABLE>
+</TABLES>
