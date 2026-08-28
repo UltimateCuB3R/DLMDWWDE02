@@ -18,7 +18,7 @@ IU Internationale Hochschule
    ```bash 
     curl.exe -H "Content-Type: application/json" -X POST -d '{\"file_path\":null}' http://localhost:8000/start
    ```
-   Warten bis die Logs anzeigen, dass der Ingestion Service gestartet wurde und die Daten verarbeitet werden.
+   Warten bis die Logs anzeigen, dass der Ingestion Service gestartet und alle Daten verarbeitet wurden.
 5. Grafana Dashboard öffnen:
    - URL: http://localhost:3000
    - Benutzername: admin
@@ -28,12 +28,12 @@ IU Internationale Hochschule
    ```bash
    docker exec dlmdwwde02-mlb-jobmanager-1 ./bin/flink run -py /opt/flink/usrlib/calc.py -d
    ```
-   Warten bis die Logs anzeigen, dass der PyFlink Job gestartet wurde und die Daten verarbeitet werden.
+   Warten bis die Logs anzeigen, dass der PyFlink Job gestartet wurde.
 7. Replay Service starten:
    ```bash
    curl.exe -H "Content-Type: application/json" -X POST http://localhost:8001/start
    ```
-   Warten bis die Logs anzeigen, dass der Replay Service gestartet wurde und die Daten verarbeitet werden.
+   Warten bis die Logs anzeigen, dass der Replay Service gestartet wurde.
 8. Für Stoppen des Replay Service folgenden Befehl ausführen:
    ```bash
    curl.exe -H "Content-Type: application/json" -X POST http://localhost:8001/stop
