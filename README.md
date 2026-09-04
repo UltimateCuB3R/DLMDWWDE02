@@ -32,7 +32,7 @@ IU Internationale Hochschule
    ```bash
    docker exec dlmdwwde02-mlb-jobmanager-1 ./bin/flink run -py /opt/flink/usrlib/calc.py -d
    ```
-   Warten bis die Logs anzeigen, dass der PyFlink Job gestartet wurde.
+   Warten bis die Logs anzeigen, dass der PyFlink Job gestartet wurde. Danach noch eine weitere Minute warten, damit der Job die Daten korrekt verarbeiten kann.
 8. Replay Service starten:
    ```bash
    curl.exe -H "Content-Type: application/json" -X POST http://localhost:8001/start
@@ -48,6 +48,7 @@ IU Internationale Hochschule
 
 - Wenn im ersten Event eines Innings keine Teams angegeben sind, wird der Eintrag in der Tabelle Innings ohne
   Team-Angaben gespeichert.
+- Wenn zu schnell nach dem Job-Submit des PyFlink Jobs der Replay-Service gestartet wird, kann es passieren, dass sich der Job aufhängt. Im Fehlerfall musste bei mir immer die Docker Engine komplett beendet und neu gestartet werden. Danach konnten die Container wieder gestartet und die obigen Schritte ab dem PyFlink Job-Submit erneut ausgeführt werden.
 
 # Beschreibung des Projekts
 
