@@ -22,22 +22,23 @@ IU Internationale Hochschule
     curl.exe -H "Content-Type: application/json" -X POST -d '{\"file_path\":null}' http://localhost:8000/start
    ```
    Warten bis die Logs anzeigen, dass der Ingestion Service gestartet und alle Daten verarbeitet wurden.
-5. Grafana Dashboard öffnen:
+   Der aktuelle Stand der Verarbeitung kann in den Logs des Containers "mlb-ingest" nachvollzogen werden.
+6. Grafana Dashboard öffnen:
     - URL: http://localhost:3000
     - Benutzername: admin
     - Passwort: admin (Nach erstem Login muss das Passwort geändert werden)
     - Dashboard: MLB Live Game State
-6. PyFlink Job starten:
+7. PyFlink Job starten:
    ```bash
    docker exec dlmdwwde02-mlb-jobmanager-1 ./bin/flink run -py /opt/flink/usrlib/calc.py -d
    ```
    Warten bis die Logs anzeigen, dass der PyFlink Job gestartet wurde.
-7. Replay Service starten:
+8. Replay Service starten:
    ```bash
    curl.exe -H "Content-Type: application/json" -X POST http://localhost:8001/start
    ```
    Warten bis die Logs anzeigen, dass der Replay Service gestartet wurde.
-8. Für Stoppen des Replay Service folgenden Befehl ausführen:
+9. Für Stoppen des Replay Service folgenden Befehl ausführen:
    ```bash
    curl.exe -H "Content-Type: application/json" -X POST http://localhost:8001/stop
    ```
