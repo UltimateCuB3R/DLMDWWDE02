@@ -2,7 +2,53 @@ Projekt: Data Engineering (DLMDWWDE02)<br>
 Jan Sauerland <br>
 IU Internationale Hochschule
 
-# Beschreibung
+# Anleitung
+
+### Voraussetzungen
+
+- Docker Desktop
+
+### Installation & Ausführung
+
+1. Repository klonen
+2. Docker Desktop starten
+3. Im Projektverzeichnis das Terminal öffnen und folgenden Befehl ausführen:
+   ```bash
+   docker compose -f docker-compose.yaml -p dlmdwwde02 up -d
+   ```
+   Warten bis die Container gestartet sind und die Logs anzeigen, dass die Services laufen.
+4. Für Start des Ingestion Service folgenden Befehl ausführen:
+   ```bash 
+    curl.exe -H "Content-Type: application/json" -X POST -d '{\"file_path\":null}' http://localhost:8000/start
+   ```
+   Warten bis die Logs anzeigen, dass der Ingestion Service gestartet und alle Daten verarbeitet wurden.
+5. Grafana Dashboard öffnen:
+    - URL: http://localhost:3000
+    - Benutzername: admin
+    - Passwort: admin (Nach erstem Login muss das Passwort geändert werden)
+    - Dashboard: MLB Live Game State
+6. PyFlink Job starten:
+   ```bash
+   docker exec dlmdwwde02-mlb-jobmanager-1 ./bin/flink run -py /opt/flink/usrlib/calc.py -d
+   ```
+   Warten bis die Logs anzeigen, dass der PyFlink Job gestartet wurde.
+7. Replay Service starten:
+   ```bash
+   curl.exe -H "Content-Type: application/json" -X POST http://localhost:8001/start
+   ```
+   Warten bis die Logs anzeigen, dass der Replay Service gestartet wurde.
+8. Für Stoppen des Replay Service folgenden Befehl ausführen:
+   ```bash
+   curl.exe -H "Content-Type: application/json" -X POST http://localhost:8001/stop
+   ```
+   Warten bis die Logs anzeigen, dass der Replay Service gestoppt wurde.
+
+### Bekannte Probleme
+
+- Wenn im ersten Event eines Innings keine Teams angegeben sind, wird der Eintrag in der Tabelle Innings ohne
+  Team-Angaben gespeichert.
+
+# Beschreibung des Projekts
 
 Das Projekt implementiert eine skalierbare Streaming-Datenpipeline für MLB-Spieldaten. Historische CSV-Daten werden in
 PostgreSQL gespeichert, über einen Replay-Service als Echtzeit-Stream simuliert, mit Kafka verteilt und durch Apache
@@ -58,14 +104,14 @@ Die Verarbeitung über Apache Flink funktioniert folgendermaßen:
 1. Der aktuelle Spielstand wird von der Datenbank geladen, um die Verarbeitung mit dem letzten bekannten Zustand zu
    starten.
 2. Je nach Event-Typ werden unterschiedliche Berechnungen durchgeführt.
-    1. game-start: Der Spielstand wird initialisiert und grundlegende Informationen wie Teams, Spielort und Datum werden
+    - game-start: Der Spielstand wird initialisiert und grundlegende Informationen wie Teams, Spielort und Datum werden
        gespeichert.
-    2. inning-start: Das aktuelle Inning wird aktualisiert und die Anzahl der Outs zurückgesetzt.
-    3. pitch: Die Anzahl der Pitches wird erhöht und die Pitch-Statistiken werden aktualisiert.
-    4. event: Der Spielstand wird basierend auf dem Spielereignis aktualisiert, z. B. bei einem Home-Run oder einem
+    - inning-start: Das aktuelle Inning wird aktualisiert und die Anzahl der Outs zurückgesetzt.
+    - pitch: Die Anzahl der Pitches wird erhöht und die Pitch-Statistiken werden aktualisiert.
+    - event: Der Spielstand wird basierend auf dem Spielereignis aktualisiert, z. B. bei einem Home-Run oder einem
        Strikeout.
-    5. inning-end: Das Inning wird abgeschlossen und die Anzahl der Outs wird zurückgesetzt.
-    6. game-end: Das Spiel wird abgeschlossen und der finale Spielstand wird gespeichert.
+    - inning-end: Das Inning wird abgeschlossen und die Anzahl der Outs wird zurückgesetzt.
+    - game-end: Das Spiel wird abgeschlossen und der finale Spielstand wird gespeichert.
 3. Der aktualisierte Spielstand wird wieder auf der Datenbank gespeichert, um den aktuellen Zustand für die nächste
    Verarbeitung zu sichern.
 
@@ -93,48 +139,3 @@ das Prinzip der Datenminimierung umgesetzt, und Zugriffe auf Datenbanken werden 
 ausschließlich lesenden Zugriff. Zur Datensicherheit trägt die Isolierung durch das Docker-Netzwerk bei. Eine
 nachvollziehbare Datenherkunft, Qualitätsprüfungen beim CSV-Import und klar definierte Kafka-Nachrichtenschemata
 gewährleisten darüber hinaus eine solide Data-Governance-Struktur.
-
-# Anleitung
-
-## Voraussetzungen
-
-- Docker Desktop
-
-## Installation & Ausführung
-
-1. Repository klonen
-2. Docker Desktop starten
-3. Im Projektverzeichnis das Terminal öffnen und folgenden Befehl ausführen:
-   ```bash
-   docker compose -f docker-compose.yaml -p dlmdwwde02 up -d
-   ```
-   Warten bis die Container gestartet sind und die Logs anzeigen, dass die Services laufen.
-4. Für Start des Ingestion Service folgenden Befehl ausführen:
-   ```bash 
-    curl.exe -H "Content-Type: application/json" -X POST -d '{\"file_path\":null}' http://localhost:8000/start
-   ```
-   Warten bis die Logs anzeigen, dass der Ingestion Service gestartet und alle Daten verarbeitet wurden.
-5. Grafana Dashboard öffnen:
-    - URL: http://localhost:3000
-    - Benutzername: admin
-    - Passwort: admin (Nach erstem Login muss das Passwort geändert werden)
-    - Dashboard: MLB Live Game State
-6. PyFlink Job starten:
-   ```bash
-   docker exec dlmdwwde02-mlb-jobmanager-1 ./bin/flink run -py /opt/flink/usrlib/calc.py -d
-   ```
-   Warten bis die Logs anzeigen, dass der PyFlink Job gestartet wurde.
-7. Replay Service starten:
-   ```bash
-   curl.exe -H "Content-Type: application/json" -X POST http://localhost:8001/start
-   ```
-   Warten bis die Logs anzeigen, dass der Replay Service gestartet wurde.
-8. Für Stoppen des Replay Service folgenden Befehl ausführen:
-   ```bash
-   curl.exe -H "Content-Type: application/json" -X POST http://localhost:8001/stop
-   ```
-   Warten bis die Logs anzeigen, dass der Replay Service gestoppt wurde.
-
-## Bekannte Probleme
-
-- Aktuell Keine.
