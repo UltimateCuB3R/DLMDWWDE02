@@ -3,7 +3,6 @@ import os
 import re
 import pandas as pd
 import pandas.errors
-from kafka import KafkaConsumer
 import xml.etree.ElementTree as ET
 import json
 from dotenv import load_dotenv
@@ -30,6 +29,14 @@ ENCODING = os.getenv("ENCODING", "utf-8")
 
 class StreamFilter(logging.Filter):
     def filter(self, record):
+        """Filter log records to include only INFO, WARNING, ERROR and CRITICAL levels.
+
+        Args:
+            record: A logging.LogRecord instance.
+
+        Returns:
+            True if the record level should be emitted to the stream handler, False otherwise.
+        """
         if record.levelno in [logging.INFO, logging.WARNING, logging.ERROR, logging.CRITICAL]:
             return True
         else:
@@ -37,6 +44,16 @@ class StreamFilter(logging.Filter):
 
 
 def set_logger(log_name: str, log_level=logging.INFO, log_path: str = "./logs"):
+    """Create and configure a logger with file rotation and a filtered stdout stream handler.
+
+    Args:
+        log_name: Name of the logger and the logfile ("{log_name}.log").
+        log_level: Minimum log level to set on the logger.
+        log_path: Directory where log files should be created. Directory is created if missing.
+
+    Returns:
+        Configured logging.Logger instance.
+    """
     logger = logging.getLogger(log_name)
     if logger.hasHandlers():
         logger.handlers.clear()
@@ -60,6 +77,17 @@ LOGGER = set_logger(os.getenv("LOGGER_NAME", "calculation"), log_path=os.getenv(
 
 
 def _load_table_definition(table_name: str) -> dict[str, str]:
+    """Load a table column definition map from the XML DB_DEFINITION file.
+
+    Args:
+        table_name: Name of the table to look up in the XML definition.
+
+    Returns:
+        A dict mapping column names to dtype strings.
+
+    Raises:
+        ValueError: If the named table is not found in the definition file.
+    """
     tree = ET.parse(Path(DB_DEFINITION))
     root = tree.getroot()
     table_node = root.find(f"./TABLE[@name='{table_name}']")
@@ -78,26 +106,15 @@ def _load_table_definition(table_name: str) -> dict[str, str]:
     return dtypes
 
 
-def _table_definition_to_types(table_definition: dict[str, str]) -> Types:
-    type_mapping = {
-        "int64": Types.INT(),
-        "float64": Types.FLOAT(),
-        "str": Types.STRING(),
-        "bool": Types.BOOLEAN(),
-        "datetime": Types.SQL_TIMESTAMP(),
-    }
-
-    field_types = []
-    for column_name, dtype in table_definition.items():
-        if dtype not in type_mapping:
-            LOGGER.critical(f"Unsupported data type '{dtype}' for column '{column_name}'")
-            raise ValueError(f"Unsupported data type '{dtype}' for column '{column_name}'")
-        field_types.append(type_mapping[dtype])
-
-    return Types.ROW_NAMED(list(table_definition.keys()), field_types)
-
-
 def get_sql_engine() -> sqlalchemy.engine.base.Engine:
+    """Create and return a SQLAlchemy engine using environment variable POSTGRES_DB_CONNECT_STRING.
+
+    Returns:
+        A SQLAlchemy Engine connected using the connection string from POSTGRES_DB_CONNECT_STRING.
+
+    Raises:
+        Exception: If the connection string environment variable is not set.
+    """
     sql_string = os.getenv("POSTGRES_DB_CONNECT_STRING")
     if sql_string:
         sql_engine = sqlalchemy.create_engine(sql_string)
@@ -109,11 +126,32 @@ def get_sql_engine() -> sqlalchemy.engine.base.Engine:
 
 
 def _quote_identifier(identifier: str) -> str:
+    """Quote an SQL identifier by wrapping in double quotes and escaping internal quotes.
+
+    Args:
+        identifier: The identifier to quote (e.g., table or column name).
+
+    Returns:
+        The safely quoted identifier string suitable for embedding in SQL statements.
+    """
     return '"' + identifier.replace('"', '""') + '"'
 
 
 def _get_insert_statement(table_name: str, data: dict[str, Any], key_columns: list[str]) -> tuple[
     sqlalchemy.TextClause, dict[str, Any]]:
+    """Build an INSERT ... ON CONFLICT SQL text clause and bind parameters from a data dict.
+
+    Args:
+        table_name: Target table name.
+        data: Mapping of column names to values for the INSERT.
+        key_columns: List of columns that form the conflict target (primary/unique key).
+
+    Returns:
+        A tuple (sqlalchemy.TextClause, bind_params) where bind_params is a dict of parameter names to values.
+
+    Raises:
+        ValueError: If data is empty or if required key_columns are missing from data.
+    """
     if not data:
         raise ValueError("Cannot build insert statement without data.")
 
@@ -149,13 +187,25 @@ def _get_insert_statement(table_name: str, data: dict[str, Any], key_columns: li
             f"ON CONFLICT ({conflict_columns}) DO NOTHING"
         )
 
-    # return statement_sql
     return sqlalchemy.sql.text(statement_sql), bind_params
 
 
 def _build_create_table_statement(table_name: str,
                                   table_definition: dict[str, str],
                                   primary_key_columns: list[str]) -> sqlalchemy.TextClause:
+    """Construct a CREATE TABLE IF NOT EXISTS statement from a lightweight table definition.
+
+    Args:
+        table_name: Name of the table to create.
+        table_definition: Mapping of column names to lightweight dtype strings (e.g., 'int64', 'str').
+        primary_key_columns: List of column names to use as the PRIMARY KEY.
+
+    Returns:
+        sqlalchemy.TextClause with the CREATE TABLE statement.
+
+    Raises:
+        ValueError: If table_definition is empty, primary key columns are missing, or an unsupported dtype is encountered.
+    """
     sql_type_mapping = {
         "int64": "BIGINT",
         "float64": "DOUBLE PRECISION",
@@ -187,42 +237,23 @@ def _build_create_table_statement(table_name: str,
 
 
 def _get_delete_statement(table_name: str, game_id: str) -> tuple[sqlalchemy.TextClause, dict[str, Any]]:
+    """Build a parameterized DELETE statement for a given game id.
+
+    Args:
+        table_name: Table from which to delete rows.
+        game_id: Identifier of the game to delete.
+
+    Returns:
+        A tuple (sqlalchemy.TextClause, params) where params is a dict containing 'game_id'.
+
+    Raises:
+        ValueError: If game_id is empty or falsy.
+    """
     if not game_id:
         raise ValueError("Cannot build delete statement without game_id.")
 
     statement_sql = f"DELETE FROM public.{_quote_identifier(table_name)} WHERE {_quote_identifier('game')} = CAST(:game_id AS TEXT)"
     return sqlalchemy.sql.text(statement_sql), {"game_id": game_id}
-
-
-def set_consumer(server: str, port: int, topic: str):
-    return KafkaConsumer(topic,
-                         bootstrap_servers=f'{server}:{port}',
-                         key_deserializer=lambda k: str(k).encode(ENCODING),
-                         value_deserializer=lambda v: json.loads(v.decode(ENCODING)))
-
-
-def start_calculation():
-    # Only for Testing!
-    sql_string = os.getenv("POSTGRES_DB_CONNECT_STRING")
-    if sql_string:
-        sql_engine = sqlalchemy.create_engine(sql_string)
-        LOGGER.debug(f"Database connection string: {sql_string}")
-    else:
-        LOGGER.critical("No database connection string provided in environment variables.")
-        raise Exception("No database connection string provided in environment variables.")
-
-    game_calc = Calculation(sql_engine)
-    consumer = set_consumer(server=os.getenv('KAFKA_HOST', 'localhost'),
-                            port=int(os.getenv('KAFKA_PORT', 9092)),
-                            topic=os.getenv('KAFKA_TOPIC', 'game-events'))
-    # consumer.subscribe(['game-events'])
-    for msg in consumer:
-        LOGGER.info(f"Received message: {msg}")
-        try:
-            total_state = game_calc.receive_event(msg.value)
-            LOGGER.debug(f"Received total state: {total_state}")
-        except pandas.errors.DatabaseError as e:
-            LOGGER.critical(f"DatabaseError processing event: {e}")
 
 
 class Calculation:
@@ -233,6 +264,14 @@ class Calculation:
     log: logging.Logger
 
     def __init__(self, db_con):
+        """Initialize Calculation instance by loading table definitions and preparing DB tables.
+
+        Args:
+            db_con: SQLAlchemy Engine or connection that will be used for database operations.
+
+        The constructor sets up a dedicated logger, loads XML table definitions for game_state,
+        innings and pitchers, stores the provided DB connection and ensures required tables exist.
+        """
         self.log = set_logger(os.getenv("LOGGER_JOB_NAME", "calculation_job"),
                               log_path=os.getenv("LOGGER_JOB_PATH", "/opt/flink/usrlib/"))
         self._def_game_state: dict[str, str] = _load_table_definition("game_state")
@@ -242,6 +281,12 @@ class Calculation:
         self._init_tables()
 
     def _init_tables(self):
+        """Ensure in-memory state structures are initialized and that required DB tables exist.
+
+        This method inspects the database, initializes empty in-memory dicts for game_state,
+        inning_state and pitcher_state based on the loaded table definitions, and creates the
+        corresponding tables if they are missing.
+        """
         self.log.info('Initializing Tables...')
         db_inspect = sqlalchemy.inspect(self.db_con)
 
@@ -272,6 +317,16 @@ class Calculation:
         self.log.info('All Tables initialized: game_state, innings, pitchers')
 
     def _read_game_state(self, game_id: str):
+        """Load game_state row for a given game_id into the in-memory self.game_state dict.
+
+        Args:
+            game_id: The game identifier to query.
+
+        Behavior:
+            - If exactly one row is found, populate self.game_state with that row.
+            - If no rows are found, initialize self.game_state with default None values.
+            - If multiple rows are found, log a critical error and raise ValueError.
+        """
         game_df = pd.read_sql_query(f"SELECT * FROM public.game_state WHERE game = '{game_id}'", self.db_con)
         # determine length of dataframe, if 1 then read first row as dict, if 0 then create new row with default values, if >1 then raise error
         if len(game_df) == 1:
@@ -286,6 +341,17 @@ class Calculation:
             raise ValueError("Unexpected number of rows in game_state")
 
     def _read_game_innings(self, game_id: str, inning: str):
+        """Load a specific inning row into in-memory self.inning_state.
+
+        Args:
+            game_id: The game identifier.
+            inning: The inning identifier (e.g., '1' or '1_bottom').
+
+        Behavior:
+            - Populates self.inning_state from the DB if exactly one row is found.
+            - Initializes defaults if no row is found.
+            - Raises ValueError if more than one row is returned.
+        """
         inning_df = pd.read_sql_query(
             f"SELECT * FROM public.innings WHERE game = '{game_id}' AND inning = '{inning}'",
             self.db_con)
@@ -302,6 +368,17 @@ class Calculation:
             raise ValueError("Unexpected number of rows in innings")
 
     def _read_game_pitchers(self, game_id: str, pitcher: str):
+        """Load a specific pitcher row into in-memory self.pitcher_state.
+
+        Args:
+            game_id: The game identifier.
+            pitcher: The pitcher identifier.
+
+        Behavior:
+            - Populates self.pitcher_state if exactly one row exists.
+            - Initializes defaults if no row exists.
+            - Raises ValueError when multiple rows are found.
+        """
         pitcher_df = pd.read_sql_query(
             f"SELECT * FROM public.pitchers WHERE game = '{game_id}' AND pitcher = '{pitcher}'", self.db_con)
         if len(pitcher_df) == 1:
@@ -316,31 +393,15 @@ class Calculation:
                 f"Unexpected number of rows in pitchers for game_id {game_id}, pitcher {pitcher}: {len(pitcher_df)}")
             raise ValueError("Unexpected number of rows in pitchers")
 
-    def _save_game_state(self):
-        self.log.debug(f'Saving game state: {self.game_state}')
-        game_df = pd.DataFrame({c: pd.Series(dtype=t) for c, t in self._def_game_state.items()})
-        game_df.loc[0] = self.game_state
-        self.log.debug(f'Game state DataFrame to save: {game_df}')
-        result = game_df.to_sql('game_state', self.db_con, if_exists='replace', index=False)
-        self.log.debug(f'result of to_sql (game_state): {result}')
-
-    def _save_game_innings(self):
-        self.log.debug(f'Saving innings state: {self.inning_state}')
-        inning_df = pd.DataFrame({c: pd.Series(dtype=t) for c, t in self._def_innings.items()})
-        inning_df.loc[0] = self.inning_state
-        self.log.debug(f'Inning state DataFrame to save: {inning_df}')
-        result = inning_df.to_sql('innings', self.db_con, if_exists='replace', index=False)
-        self.log.debug(f'result of to_sql (innings): {result}')
-
-    def _save_game_pitchers(self):
-        self.log.debug(f'Saving pitchers state: {self.pitcher_state}')
-        pitcher_df = pd.DataFrame({c: pd.Series(dtype=t) for c, t in self._def_pitchers.items()})
-        pitcher_df.loc[0] = self.pitcher_state
-        self.log.debug(f'Pitcher state DataFrame to save: {pitcher_df}')
-        result = pitcher_df.to_sql('pitchers', self.db_con, if_exists='replace', index=False)
-        self.log.debug(f'result of to_sql (pitchers): {result}')
-
     def _delete_game_data(self, game_id: str):
+        """Remove all rows related to a game across game_state, innings and pitchers tables.
+
+        Args:
+            game_id: Identifier of the game to delete.
+
+        Behavior:
+            Executes parameterized DELETE statements for the three managed tables.
+        """
         self.log.info(f"Deleting all data for game_id {game_id}")
         for table in ["game_state", "innings", "pitchers"]:
             delete_stmt, params = _get_delete_statement(table, game_id)
@@ -349,6 +410,19 @@ class Calculation:
             self.log.debug(f'DELETE result for {table} where game={game_id}: {sql_result}')
 
     def receive_event(self, event: dict[str, Any]):
+        """Top-level entry to process an incoming game event and return the updated state.
+
+        Args:
+            event: Dict representing a single input event. Expected keys include 'game-id' and 'event-type'.
+
+        Behavior:
+            - Loads current game state from DB.
+            - Dispatches to specific processors based on event-type (game, inning, pitch, event).
+            - Catches ValueError raised during processing and logs critically.
+
+        Returns:
+            A dictionary containing the updated 'game-state', 'inning-state' and 'pitcher-state'.
+        """
         game_id = str(event["game-id"])
         # read game state and innings via sqlalchemy
         self._read_game_state(game_id)
@@ -358,20 +432,14 @@ class Calculation:
             match event["event-type"]:
                 case "game-start" | "game-end":
                     self._process_game(event)
-                    # self._save_game_state()
                 case "inning-start" | "inning-end":
                     self._read_game_innings(game_id, event["inning"])
                     self._process_inning(event)
-                    # self._save_game_state()
-                    # self._save_game_innings()
                 case "pitch":
                     self._read_game_pitchers(game_id, event["pitcher"])
                     self._process_pitch(event)
-                    # self._save_game_state()
-                    # self._save_game_pitchers()  # Pitch counter per Pitcher per Game
                 case "event":
                     self._process_event(event)
-                    # self._save_game_state()
         except ValueError:
             self.log.critical(f"Error processing event: {event}")
         result_state = {
@@ -383,6 +451,23 @@ class Calculation:
         return result_state
 
     def _process_game(self, event: dict[str, Any]):
+        """Process game-start and game-end events, updating in-memory game_state accordingly.
+
+        Args:
+            event: Event dict containing at least 'game-id' and 'event-type'. For game-start a variety
+                   of static fields (home, away, stadium, etc.) may be present. For game-end it should
+                   contain final scores and duration.
+
+        Behavior:
+            - On 'game-start' initializes game_state from event data or defaults and may delete
+              any previous data for a restarted game.
+            - On 'game-end' verifies final scores against calculated ones, updates final fields and
+              marks game-running False.
+
+        Raises:
+            ValueError: If the event-type is unexpected or if a restart is detected while the game
+                        is already marked as running.
+        """
         game_id = str(event["game-id"])
         if event["event-type"] == "game-start":
             self.log.info(f"Starting game: {game_id}")
@@ -437,6 +522,19 @@ class Calculation:
             raise ValueError("Invalid event-type")
 
     def _process_inning(self, event: dict[str, Any]):
+        """Handle inning-start and inning-end events, updating inning_state and related game_state fields.
+
+        Args:
+            event: Event dict with keys such as 'game-id', 'event-type', 'inning', scores, etc.
+
+        Behavior:
+            - On 'inning-start' initializes inning_state fields from the event or defaults and sets game_state['inning'].
+            - On 'inning-end' updates inning scores, marks inning_running False and resets transient game_state fields
+              such as outs, count and base runners.
+
+        Raises:
+            ValueError: If event-type is not recognized.
+        """
         game_id = str(event["game-id"])
         if event["event-type"] == "inning-start":
             self.log.info(f"Inning started: {event['inning']} in game {game_id}")
@@ -475,6 +573,22 @@ class Calculation:
             raise ValueError("Invalid event-type")
 
     def _process_pitch(self, event: dict[str, Any]):
+        """Process a pitch event, updating count, pitcher and base-runner fields.
+
+        Args:
+            event: Event dict with keys such as 'game-id','pitch-id','pitch','pitch-type','pitch-speed',
+                   'pitch-location', and 'play-bases'.
+
+        Behavior:
+            - Initializes count to 0-0 for the first pitch of a plate appearance.
+            - Updates balls/strikes based on heuristics applied to the 'pitch' text.
+            - Parses pitch-location strings to extract numeric coordinates when present.
+            - Updates runner-1/2/3 based on 'play-bases'.
+            - Maintains per-pitcher pitch counts in self.pitcher_state.
+
+        Raises:
+            ValueError: If event-type is not 'pitch'.
+        """
         game_id = str(event["game-id"])
         if event["event-type"] == "pitch":
             self.log.info(f"Pitch: {event['pitch-id']} for event {event['event-id']} of game {game_id}")
@@ -530,12 +644,25 @@ class Calculation:
             raise ValueError("Invalid event-type")
 
     def _process_event(self, event: dict[str, Any]):
+        """Handle generic in-play events, updating scores, outs and potential pitcher attribution.
+
+        Args:
+            event: Event dict containing 'away-score','home-score','event-text', 'event-id', and 'inning'.
+
+        Behavior:
+            - Updates game_state scores from the event payload.
+            - Parses event-text to increment outs for 'out' and 'double play', and tries to extract pitcher name
+              when the text contains the word 'pitching'.
+
+        Raises:
+            ValueError: If event-type is not 'event'.
+        """
         game_id = str(event["game-id"])
         if event["event-type"] == "event":
             self.log.info(f"Event: {event['event-id']} in inning {event['inning']} of game {game_id}")
             # create new event entry for game id and event id
             # values: batting-team, pitching-team, inning, event-text, away-score, home-score
-            # calculation needed: event-text -> number of outs; runner on bases?
+            # calculation needed: event-text -> number of outs; runner on bases
 
             self.game_state["away-score"] = self._to_int(event["away-score"])
             self.game_state["home-score"] = self._to_int(event["home-score"])
@@ -553,22 +680,32 @@ class Calculation:
 
     @staticmethod
     def _to_int(value: Any) -> int:
+        """Safely convert a value to int, returning 0 for invalid input.
+
+        Args:
+            value: Any value that may be cast to int.
+
+        Returns:
+            Integer representation or 0 when conversion fails.
+        """
         try:
             return int(value)
         except (ValueError, TypeError):
             return 0
 
 
-# --------------------------------------------------------
-# PyFlink
-# --------------------------------------------------------
-
 class PostgresSinkFunction(MapFunction):
     def __init__(self):
+        """Initialize the sink function instance. Connections/loggers created in open()."""
         self.log = None
         self.conn = None
 
     def open(self, runtime_context: RuntimeContext):
+        """Flink lifecycle method called once to initialize resources like logger and DB connection.
+
+        Args:
+            runtime_context: Flink runtime context (unused but provided by the framework).
+        """
         if self.log:
             self.log.info("Logger for PostgresSinkFunction already initialized")
         else:
@@ -582,6 +719,17 @@ class PostgresSinkFunction(MapFunction):
             self.conn = get_sql_engine().connect().execution_options(isolation_level="AUTOCOMMIT")
 
     def map(self, value):
+        """Consume a serialized state payload (JSON), and persist game, inning and pitcher state to Postgres.
+
+        Args:
+            value: JSON-encoded string containing keys 'game-state','inning-state','pitcher-state'.
+
+        Returns:
+            None
+
+        Raises:
+            ConnectionError: If the DB connection has not been established via open().
+        """
         state = json.loads(value)
         game_state = state.get("game-state")
         inning_state = state.get("inning-state")
@@ -610,6 +758,7 @@ class PostgresSinkFunction(MapFunction):
         return None
 
     def close(self):
+        """Flink lifecycle close: log and release DB connection if present."""
         if self.log:
             self.log.info("Closing connection to PostgreSQL for Sink")
         if self.conn:
@@ -619,10 +768,18 @@ class PostgresSinkFunction(MapFunction):
 
 class BusinessLogicMapper(MapFunction):
     def __init__(self):
+        """Mapper that applies business logic to incoming events using Calculation.
+
+        Resources (logger, Calculation) are created in open()."""
         self.log = None
         self.game_calc = None
 
     def open(self, runtime_context: RuntimeContext):
+        """Flink lifecycle hook to initialize logger and Calculation helper.
+
+        Args:
+            runtime_context: Flink RuntimeContext (unused but provided by framework).
+        """
         if self.log:
             self.log.info("Logger for BusinessLogicMapper already initialized")
         else:
@@ -637,6 +794,14 @@ class BusinessLogicMapper(MapFunction):
         self.log.info("BusinessLogicMapper opened successfully")
 
     def map(self, value):
+        """Flink map method: deserialize event JSON, run business logic, and serialize resulting state.
+
+        Args:
+            value: JSON-encoded string representing an input event.
+
+        Returns:
+            JSON string of the current combined state (game, inning, pitcher), or null-state on DB error.
+        """
         event = json.loads(value)
         self.log.info(f"Received message: {event}")
         try:
@@ -653,6 +818,7 @@ class BusinessLogicMapper(MapFunction):
         return json.dumps(result)
 
     def close(self):
+        """Flink close lifecycle method: release Calculation reference and log shutdown."""
         if self.log:
             self.log.info("Closing BusinessLogicMapper")
         if self.game_calc:
@@ -663,6 +829,15 @@ class EventTimestampAssigner(TimestampAssigner):
     log: logging.Logger
 
     def extract_timestamp(self, value, record_timestamp):
+        """Extract an integer event timestamp from the JSON payload for Flink record timestamping.
+
+        Args:
+            value: Serialized event payload (expected JSON string).
+            record_timestamp: Fallback timestamp provided by the runtime.
+
+        Returns:
+            Integer timestamp to use for the event. Falls back to record_timestamp on parse error.
+        """
         event = json.loads(value)
         if self.log:
             self.log.debug("Using existing logger for timestamp extraction")
@@ -679,11 +854,15 @@ class EventTimestampAssigner(TimestampAssigner):
         return this_timestamp
 
 
-# --------------------------------------------------------
-# Main
-# --------------------------------------------------------
-
 def main():
+    """Entry point to set up and execute the PyFlink streaming job.
+
+    Behavior:
+        - Configures the StreamExecutionEnvironment for streaming with checkpointing.
+        - Builds a Kafka source and assigns an EventTimestampAssigner.
+        - Applies BusinessLogicMapper and PostgresSinkFunction to persist computed state.
+        - Prints the processed stream and starts execution.
+    """
     env = StreamExecutionEnvironment.get_execution_environment()
     LOGGER.info("Setting up Flink Streaming Job for Game Events Calculation")
     env.set_runtime_mode(RuntimeExecutionMode.STREAMING)
@@ -722,35 +901,8 @@ def main():
                                   ).map(PostgresSinkFunction(),
                                         output_type=Types.PICKLED_BYTE_ARRAY())
 
-    # game_stream = processed_stream.filter(lambda x: x.get("game-state") is not None)
-    # inning_stream = processed_stream.filter(lambda x: x.get("inning-state") is not None)
-    # pitcher_stream = processed_stream.filter(lambda x: x.get("pitcher-state") is not None)
-
-    # LOGGER.info("Creating postgres sinks")
-    # game_def = _load_table_definition("game_state")
-    # game_sink = configure_postgres_sink(_get_insert_statement("game_state", game_def, ["game"]),
-    #                                    _table_definition_to_types(game_def),
-    #                                    os.getenv("POSTGRES_DB_JDBC_URL", "jdbc:postgresql://postgres:5432/postgres"))
-    # inning_def = _load_table_definition("innings")
-    # inning_sink = configure_postgres_sink(_get_insert_statement("innings", inning_def, ["game", "inning"]),
-    #                                      _table_definition_to_types(inning_def),
-    #                                      os.getenv("POSTGRES_DB_JDBC_URL",
-    #                                                "jdbc:postgresql://postgres:5432/postgres"))
-    # pitcher_def = _load_table_definition("pitchers")
-    # pitcher_sink = configure_postgres_sink(_get_insert_statement("pitchers", pitcher_def, ["game", "pitcher"]),
-    #                                       _table_definition_to_types(pitcher_def),
-    #                                       os.getenv("POSTGRES_DB_JDBC_URL",
-    #                                                 "jdbc:postgresql://postgres:5432/postgres"))
-    # LOGGER.info("Mapping processed stream to sinks")
-    # game_stream.add_sink(game_sink)
-    # inning_stream.add_sink(inning_sink)
-    # pitcher_stream.add_sink(pitcher_sink)
-
     LOGGER.info('Showing alerts in the console')
     processed_stream.print()
-    # game_stream.print()
-    # inning_stream.print()
-    # pitcher_stream.print()
 
     LOGGER.info("Executing Flink Streaming Job for Game Events Calculation")
     env.execute("game-events-calculation")

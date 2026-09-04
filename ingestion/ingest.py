@@ -22,14 +22,40 @@ FILES = {
 
 
 class StreamFilter(logging.Filter):
+    """Logging filter that allows common stream log levels.
+
+    This filter is added to the stream handler so that regular application
+    log levels (DEBUG, INFO, WARNING, ERROR, CRITICAL) are forwarded to stdout.
+    """
     def filter(self, record):
-        if record.levelno in [logging.INFO, logging.WARNING, logging.ERROR, logging.DEBUG, logging.CRITICAL]:
-            return True
-        else:
-            return False
+        """Decide whether a LogRecord should be emitted to the stream handler.
+
+        Args:
+            record: logging.LogRecord instance to evaluate.
+
+        Returns:
+            bool: True when the record level is one of the allowed stream levels,
+            False otherwise.
+        """
+        allowed_levels = [logging.INFO, logging.WARNING, logging.ERROR, logging.DEBUG, logging.CRITICAL]
+        return record.levelno in allowed_levels
 
 
 def set_logger(log_name: str, log_level: str = "INFO", log_path: str = "./logs"):
+    """Configure and return a logger with file and stream handlers.
+
+    Parameters:
+        log_name (str): Base name for the logger and the log file.
+        log_level (str): Logging level name (e.g. 'INFO', 'DEBUG').
+        log_path (str): Directory where rotating log files are written.
+
+    Returns:
+        logging.Logger: Configured logger instance.
+
+    The function ensures the log directory exists, attaches a rotating file
+    handler (with encoding from ENV) and a stream handler that writes to stdout.
+    The StreamFilter restricts which records are passed to the stream handler.
+    """
     logger = logging.getLogger(log_name)
     if logger.hasHandlers():
         logger.handlers.clear()
@@ -54,6 +80,24 @@ LOGGER = set_logger(os.getenv("LOGGER_NAME", "ingest"), os.getenv("LOGGER_LEVEL"
 
 
 def start_ingestion(file_path: str) -> dict:
+    """Ingest CSV files from a directory into the configured database.
+
+    The function reads CSV files defined in FILES, streams them in chunks
+    and writes them to PostgreSQL (connection string taken from
+    POSTGRES_DB_CONNECT_STRING environment variable). It returns a dict
+    with the number of rows inserted per table.
+
+    Args:
+        file_path (str): Directory containing the CSV files.
+
+    Returns:
+        dict: Mapping with keys 'games', 'events', 'pitches' and integer counts
+        of rows successfully written for each table.
+
+    Raises:
+        ValueError: If no database connection string is provided via environment.
+        FileNotFoundError: Propagated from CSV loader if files are missing.
+    """
     # create a database connection
     sql_string = os.getenv("POSTGRES_DB_CONNECT_STRING")
     if sql_string:
@@ -99,6 +143,18 @@ def start_ingestion(file_path: str) -> dict:
 
 
 def _load_csv_into_table(file_path: Path, encoding: str = "utf-8") -> pd.DataFrame:
+    """Load a CSV file fully into a pandas DataFrame.
+
+    Args:
+        file_path (Path): Path to the CSV file.
+        encoding (str): File encoding to use when reading.
+
+    Returns:
+        pd.DataFrame: DataFrame containing the CSV contents.
+
+    Raises:
+        FileNotFoundError: If the provided file_path does not exist.
+    """
     if not file_path.exists():
         LOGGER.critical("CSV file does not exist.")
         raise FileNotFoundError(f"CSV file does not exist: {file_path}")
@@ -114,6 +170,23 @@ def _load_csv_into_table(file_path: Path, encoding: str = "utf-8") -> pd.DataFra
 
 
 def _load_csv_into_table_chunked(file_path: Path, encoding: str = "utf-8", chunk_size: int = 100000):
+    """Yield chunks of a CSV file as pandas DataFrames.
+
+    This generator reads the CSV in streaming fashion using pandas.read_csv
+    with the chunksize parameter. Each yielded chunk can be written to the
+    database separately to avoid excessive memory usage.
+
+    Args:
+        file_path (Path): Path to the CSV file.
+        encoding (str): Encoding to use when reading the file.
+        chunk_size (int): Number of rows per yielded chunk.
+
+    Yields:
+        pd.DataFrame: Next chunk of rows from the CSV file.
+
+    Raises:
+        FileNotFoundError: If the provided file_path does not exist.
+    """
     if not file_path.exists():
         LOGGER.critical("CSV file does not exist.")
         raise FileNotFoundError(f"CSV file does not exist: {file_path}")
@@ -148,11 +221,38 @@ app = FastAPI(title="Ingestion API", version="1.0.0")
 
 @app.get("/health")
 def health_check() -> dict[str, str]:
+    """Simple health check endpoint for the FastAPI app.
+
+    Returns a small JSON payload indicating the service status. Intended for
+    orchestration or uptime checks.
+
+    Returns:
+        dict[str, str]: {'status': 'ok'} when the application is alive.
+    """
     return {"status": "ok"}
 
 
 @app.post("/start", response_model=IngestionResponse)
 def start_ingestion_endpoint(request: IngestionRequest) -> IngestionResponse:
+    """API endpoint to trigger ingestion from a provided directory.
+
+    The endpoint reads the 'file_path' from the request body (or falls back to
+    the INGESTION_PATH environment variable) and calls start_ingestion. Errors
+    from missing files or configuration are translated into appropriate HTTP
+    errors.
+
+    Args:
+        request (IngestionRequest): Pydantic model containing the optional
+            file_path to ingest from.
+
+    Returns:
+        IngestionResponse: Pydantic response model with counts per table and
+            the path ingested.
+
+    Raises:
+        HTTPException: 404 if CSV files are missing, 400 if configuration is
+            invalid (e.g. missing DB connection string).
+    """
     ingestion_path = request.file_path or os.getenv("INGESTION_PATH", "../raw_data/")
     try:
         result = start_ingestion(ingestion_path)
